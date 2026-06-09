@@ -54,16 +54,24 @@ class TestNumericalAccuracy:
         sk_ref = direct_ft_numpy(points, k_vecs)
         np.testing.assert_allclose(sk_gpu, sk_ref, rtol=RTOL, atol=ATOL)
 
-    def test_random_accuracy(self):
-        _, points = freud.data.make_random_system(10.0, 1000, seed=42)
+    @pytest.mark.parametrize("N", [500, 1000, 2000])
+    def test_random_accuracy(self, N):
+        _, points = freud.data.make_random_system(10.0, N, seed=42)
         k_vecs = crystal_kvecs(10.0, K=3)
         sk_gpu = sf3d(points.astype(np.float32), k_vecs)
         sk_ref = direct_ft_numpy(points, k_vecs)
         np.testing.assert_allclose(sk_gpu, sk_ref, rtol=RTOL, atol=ATOL)
 
-    def test_noisy_crystal_accuracy(self):
-        uc = freud.data.UnitCell.fcc()
-        box, points = uc.generate_system(4, sigma_noise=0.05, seed=42)
+    @pytest.mark.parametrize(
+        "name,uc_func",
+        [
+            ("SC", freud.data.UnitCell.sc),
+            ("BCC", freud.data.UnitCell.bcc),
+            ("FCC", freud.data.UnitCell.fcc),
+        ],
+    )
+    def test_noisy_crystal_accuracy(self, name, uc_func):
+        box, points = uc_func().generate_system(4, sigma_noise=0.05, seed=42)
         k_vecs = crystal_kvecs(box.Lx, K=5)
         sk_gpu = sf3d(points.astype(np.float32), k_vecs)
         sk_ref = direct_ft_numpy(points, k_vecs)
@@ -91,59 +99,34 @@ class TestCrystalSelectionRules:
                     forbidden.append(sk[i])
         return N, np.array(allowed), np.array(forbidden)
 
-    def test_sc_peaks_everywhere(self):
-        """SC: all integer hkl should be Bragg peaks with S(k) = N."""
-        N, allowed, _ = self._get_peaks(
-            freud.data.UnitCell.sc,
-            4,
-            K=3,
-            is_allowed=lambda _: True,
-        )
-        np.testing.assert_array_less(
-            N * NEAR_ONE,
-            allowed,
-            err_msg=f"SC: some peaks below {N * NEAR_ONE:.2f}, expected ~{N}",
-        )
-
-    def test_bcc_even_sum_only(self):
-        """BCC: peaks only where h+k+l is even."""
-        N, allowed, forbidden = self._get_peaks(
-            freud.data.UnitCell.bcc,
-            4,
-            K=3,
-            is_allowed=lambda hkl: sum(hkl) % 2 == 0,
-        )
-        np.testing.assert_array_less(
-            N * NEAR_ONE,
-            allowed,
-            err_msg=f"BCC: some allowed peaks below {N * NEAR_ONE:.2f}",
-        )
-        np.testing.assert_array_less(
-            forbidden,
-            NEAR_ZERO,
-            err_msg=f"BCC: some forbidden peaks above {NEAR_ZERO}",
-        )
-
-    def test_fcc_all_even_or_all_odd(self):
-        """FCC: peaks only when h,k,l are all even or all odd."""
-        N, allowed, forbidden = self._get_peaks(
-            freud.data.UnitCell.fcc,
-            4,
-            K=3,
-            is_allowed=lambda hkl: (
-                all(v % 2 == 0 for v in hkl) or all(v % 2 == 1 for v in hkl)
+    @pytest.mark.parametrize(
+        "name,uc_func,is_allowed",
+        [
+            ("SC", freud.data.UnitCell.sc, lambda _: True),
+            ("BCC", freud.data.UnitCell.bcc, lambda hkl: sum(hkl) % 2 == 0),
+            (
+                "FCC",
+                freud.data.UnitCell.fcc,
+                lambda hkl: (
+                    all(v % 2 == 0 for v in hkl) or all(v % 2 == 1 for v in hkl)
+                ),
             ),
-        )
+        ],
+    )
+    def test_selection_rules(self, name, uc_func, is_allowed):
+        """Allowed Bragg peaks have S(k) ~ N; forbidden peaks have S(k) ~ 0."""
+        N, allowed, forbidden = self._get_peaks(uc_func, 4, K=3, is_allowed=is_allowed)
         np.testing.assert_array_less(
             N * NEAR_ONE,
             allowed,
-            err_msg=f"FCC: some allowed peaks below {N * NEAR_ONE:.2f}",
+            err_msg=f"{name}: some allowed peaks below {N * NEAR_ONE:.2f}",
         )
-        np.testing.assert_array_less(
-            forbidden,
-            NEAR_ZERO,
-            err_msg=f"FCC: some forbidden peaks above {NEAR_ZERO}",
-        )
+        if len(forbidden) > 0:
+            np.testing.assert_array_less(
+                forbidden,
+                NEAR_ZERO,
+                err_msg=f"{name}: some forbidden peaks above {NEAR_ZERO}",
+            )
 
 
 class TestEdgeCases:
@@ -201,16 +184,18 @@ class TestEdgeCases:
 
 _DIAMOND_UC = freud.data.UnitCell(
     freud.Box.cube(1.0),
-    np.array([
-        [0, 0, 0],
-        [0.5, 0.5, 0],
-        [0, 0.5, 0.5],
-        [0.5, 0, 0.5],
-        [0.25, 0.25, 0.25],
-        [0.75, 0.75, 0.25],
-        [0.25, 0.75, 0.75],
-        [0.75, 0.25, 0.75],
-    ]),
+    np.array(
+        [
+            [0, 0, 0],
+            [0.5, 0.5, 0],
+            [0, 0.5, 0.5],
+            [0.5, 0, 0.5],
+            [0.25, 0.25, 0.25],
+            [0.75, 0.75, 0.25],
+            [0.25, 0.75, 0.75],
+            [0.75, 0.25, 0.75],
+        ]
+    ),
 )
 
 
@@ -287,6 +272,7 @@ class TestDiamondStructureFactor:
             err_msg="Diamond: h+k+l=4N+2 peaks should be extinct",
         )
 
+
 class TestDebyeWaller:
     """Debye-Waller factor validation for crystals with Gaussian noise.
 
@@ -319,7 +305,7 @@ class TestDebyeWaller:
         k_sq_bragg = np.sum(k_bragg.astype(np.float64) ** 2, axis=1)
 
         # Expected: <S(k)> = 1 + exp(-σ²k²) × (S₀(k) - 1)
-        dwf = np.exp(-sigma ** 2 * k_sq_bragg)
+        dwf = np.exp(-(sigma**2) * k_sq_bragg)
         expected = 1.0 + dwf * (s0_bragg.astype(np.float64) - 1.0)
 
         # Only test peaks where the signal is still above the diffuse background (~1)
@@ -339,7 +325,9 @@ class TestDebyeWaller:
         sk_mean = sk_sum / n_samples
 
         np.testing.assert_allclose(
-            sk_mean[testable], expected[testable], rtol=0.10,
+            sk_mean[testable],
+            expected[testable],
+            rtol=0.10,
             err_msg=f"σ={sigma}: Bragg peak DWF mismatch",
         )
 
@@ -372,7 +360,8 @@ class TestDebyeWaller:
         mean_low = avg_bragg(sigma_low)
         mean_high = avg_bragg(sigma_high)
         np.testing.assert_array_less(
-            mean_high, mean_low,
+            mean_high,
+            mean_low,
             err_msg=f"Higher σ should reduce Bragg intensity: σ={sigma_high} mean={mean_high:.2f} >= σ={sigma_low} mean={mean_low:.2f}",
         )
 
@@ -385,7 +374,9 @@ class TestDebyeWaller:
 
         sk = sf3d(perfect_pts.astype(np.float32), k)
         np.testing.assert_allclose(
-            sk[bragg_idx], N, rtol=RTOL,
+            sk[bragg_idx],
+            N,
+            rtol=RTOL,
             err_msg="Perfect crystal Bragg peaks should equal N (DWF=1)",
         )
 
@@ -432,7 +423,9 @@ class TestStatisticalProperties:
         k_vecs = directions * k_magnitude
         sk = sf3d(points, k_vecs)
         np.testing.assert_allclose(
-            np.mean(sk), 1.0, atol=0.05,
+            np.mean(sk),
+            1.0,
+            atol=0.05,
             err_msg=f"Large-k mean S(k) = {np.mean(sk):.4f}, expected ~1.0",
         )
 
@@ -453,7 +446,7 @@ class TestDebyeValidation:
         N = len(pts)
         # Pairwise distance matrix
         diff = pts[:, np.newaxis, :] - pts[np.newaxis, :, :]
-        distances = np.sqrt(np.sum(diff ** 2, axis=2)).ravel()
+        distances = np.sqrt(np.sum(diff**2, axis=2)).ravel()
         S = np.zeros(len(q_values))
         for i, q in enumerate(q_values):
             qd = q * distances
@@ -463,7 +456,9 @@ class TestDebyeValidation:
 
     def test_debye_matches_direct(self):
         """Compare GPU direct FT against Debye scattering on an FCC crystal."""
-        box, points = freud.data.UnitCell.fcc().generate_system(3, sigma_noise=0.05, seed=42)
+        box, points = freud.data.UnitCell.fcc().generate_system(
+            3, sigma_noise=0.05, seed=42
+        )
 
         # Choose q values and generate k-vectors on spherical shells
         q_values = np.array([2.0, 4.0, 6.0, 8.0, 10.0])
@@ -484,7 +479,9 @@ class TestDebyeValidation:
             sk_shell_mean = np.mean(shell)
             sk_debye = self._debye_ssf(points, np.array([q]))[0]
             np.testing.assert_allclose(
-                sk_shell_mean, sk_debye, rtol=0.05,
+                sk_shell_mean,
+                sk_debye,
+                rtol=0.05,
                 err_msg=f"q={q}: GPU mean={sk_shell_mean:.2f}, Debye={sk_debye:.2f}",
             )
 
@@ -516,7 +513,9 @@ class TestDebyeValidation:
             shell = sk_gpu[i * n_per_shell : (i + 1) * n_per_shell]
             sk_debye = self._debye_ssf(points, np.array([q]))[0]
             np.testing.assert_allclose(
-                np.mean(shell), sk_debye, rtol=0.05,
+                np.mean(shell),
+                sk_debye,
+                rtol=0.05,
                 err_msg=f"{name} q={q}: GPU mean={np.mean(shell):.2f}, Debye={sk_debye:.2f}",
             )
 
@@ -540,7 +539,9 @@ class TestDebyeValidation:
         for i, q in enumerate(q_values):
             shell = sk_gpu[i * n_per_shell : (i + 1) * n_per_shell]
             np.testing.assert_allclose(
-                np.mean(shell), sk_debye[i], rtol=0.05,
+                np.mean(shell),
+                sk_debye[i],
+                rtol=0.05,
                 err_msg=f"Random q={q}: GPU mean={np.mean(shell):.2f}, Debye={sk_debye[i]:.2f}",
             )
 
@@ -554,7 +555,9 @@ class TestDebyeValidation:
         k_vecs = np.array([[0, 0, 0]], dtype=np.float32)
         sk = sf3d(points.astype(np.float32), k_vecs)
         np.testing.assert_allclose(
-            sk[0], N, rtol=1e-3,
+            sk[0],
+            N,
+            rtol=1e-3,
             err_msg=f"S(0) = {sk[0]:.2f}, expected N={N}",
         )
 
@@ -564,7 +567,8 @@ class TestDebyeValidation:
         k_vecs = crystal_kvecs(10.0, K=5)
         sk = sf3d(points.astype(np.float32), k_vecs)
         np.testing.assert_array_less(
-            -ATOL, sk,
+            -ATOL,
+            sk,
             err_msg="S(k) must be non-negative",
         )
 
@@ -614,7 +618,9 @@ class TestVacancyDisorder:
         sk_mean = sk_sum / n_samples
 
         np.testing.assert_allclose(
-            sk_mean, expected, rtol=0.10,
+            sk_mean,
+            expected,
+            rtol=0.10,
             err_msg=f"c={c}: vacancy Bragg peak mismatch",
         )
 
@@ -641,7 +647,9 @@ class TestVacancyDisorder:
         sk_mean = sk_sum / n_samples
 
         np.testing.assert_allclose(
-            np.mean(sk_mean), c, atol=0.05,
+            np.mean(sk_mean),
+            c,
+            atol=0.05,
             err_msg=f"c={c}: off-Bragg <S>={np.mean(sk_mean):.4f}, expected ~{c}",
         )
 
@@ -664,7 +672,8 @@ class TestVacancyDisorder:
         mean_low = avg_bragg(0.02)
         mean_high = avg_bragg(0.20)
         np.testing.assert_array_less(
-            mean_high, mean_low,
+            mean_high,
+            mean_low,
             err_msg=f"Higher c should reduce Bragg: c=0.20 mean={mean_high:.2f} >= c=0.02 mean={mean_low:.2f}",
         )
 
@@ -704,10 +713,13 @@ class TestLauePeakProfile:
         sk = sf3d(points.astype(np.float32), k_vecs)
 
         # Analytical: x-profile × M² (y,z still at Bragg peak)
-        expected = self._laue_1d(delta.astype(np.float64), M) * M ** 2
+        expected = self._laue_1d(delta.astype(np.float64), M) * M**2
 
         np.testing.assert_allclose(
-            sk.astype(np.float64), expected, rtol=5e-4, atol=5e-5,
+            sk.astype(np.float64),
+            expected,
+            rtol=5e-4,
+            atol=5e-5,
             err_msg=f"M={M}: Laue profile mismatch",
         )
 
@@ -727,7 +739,8 @@ class TestLauePeakProfile:
             fwhms[M] = delta[above[-1]] - delta[above[0]]
 
         np.testing.assert_array_less(
-            fwhms[8] * 1.5, fwhms[4],
+            fwhms[8] * 1.5,
+            fwhms[4],
             err_msg=f"FWHM should scale ~1/M: M=4 fwhm={fwhms[4]:.4f}, M=8 fwhm={fwhms[8]:.4f}",
         )
 
@@ -764,26 +777,27 @@ class TestUniformStrain:
         nonzero = np.any(hkl != 0, axis=1)
         return np.where(on_bragg & nonzero)[0]
 
-    def test_hydrostatic_strain_shifts_peaks(self):
-        """Hydrostatic ε=0.05I: peaks shift from a=1 to a=1.05."""
+    @pytest.mark.parametrize("eps", [0.03, 0.05, 0.08])
+    def test_hydrostatic_strain_shifts_peaks(self, eps):
+        """Hydrostatic strain: peaks shift from a=1 to a=1+eps."""
         _, perfect_pts = freud.data.UnitCell.sc().generate_system(4)
         N = len(perfect_pts)
-        strained = self._apply_strain(perfect_pts, [0.05, 0.05, 0.05])
+        strained = self._apply_strain(perfect_pts, [eps, eps, eps])
 
         k_old = crystal_kvecs(1.0, K=3)
-        k_new = crystal_kvecs(1.05, K=3)
+        k_new = crystal_kvecs(1 + eps, K=3)
 
         sk_at_old = sf3d(strained.astype(np.float32), k_old)
         sk_at_new = sf3d(strained.astype(np.float32), k_new)
 
-        # New lattice: all non-zero hkl are Bragg peaks for the strained crystal
         nonzero_new = np.any(k_new != 0, axis=1)
-        # Old lattice: filter to Bragg positions (integer hkl at 2π spacing)
         bragg_old = self._bragg_indices(k_old)
 
         np.testing.assert_allclose(
-            sk_at_new[nonzero_new], N, rtol=RTOL,
-            err_msg="Strained crystal peaks at new positions should equal N",
+            sk_at_new[nonzero_new],
+            N,
+            rtol=RTOL,
+            err_msg=f"eps={eps}: strained crystal peaks at new positions should equal N",
         )
         np.testing.assert_array_less(
             np.mean(sk_at_old[bragg_old]),
@@ -791,13 +805,17 @@ class TestUniformStrain:
             err_msg="Old peak positions should be weaker than new after strain",
         )
 
-    def test_uniaxial_strain_shifts_peaks(self):
-        """Uniaxial ε_x=0.05: only x-peaks shift, y/z unchanged."""
+    @pytest.mark.parametrize("axis_idx", [0, 1, 2])
+    def test_uniaxial_strain_shifts_peaks(self, axis_idx):
+        """Uniaxial strain along each axis shifts peaks in that direction only."""
         _, perfect_pts = freud.data.UnitCell.sc().generate_system(4)
         N = len(perfect_pts)
-        strained = self._apply_strain(perfect_pts, [0.05, 0.0, 0.0])
+        eps_diag = [0.0, 0.0, 0.0]
+        eps_diag[axis_idx] = 0.05
+        strained = self._apply_strain(perfect_pts, eps_diag)
 
-        k_new = orthorhombic_kvecs(1.05, 1.0, 1.0, K=3)
+        a_vals = [1.05 if i == axis_idx else 1.0 for i in range(3)]
+        k_new = orthorhombic_kvecs(*a_vals, K=3)
         k_old = crystal_kvecs(1.0, K=3)
 
         sk_new = sf3d(strained.astype(np.float32), k_new)
@@ -807,24 +825,38 @@ class TestUniformStrain:
         bragg_old = self._bragg_indices(k_old)
 
         np.testing.assert_allclose(
-            sk_new[nonzero_new], N, rtol=RTOL,
-            err_msg="Uniaxial strain: peaks at new orthorhombic positions should equal N",
+            sk_new[nonzero_new],
+            N,
+            rtol=RTOL,
+            err_msg=f"axis={axis_idx}: peaks at new orthorhombic positions should equal N",
         )
         np.testing.assert_array_less(
             np.mean(sk_old[bragg_old]),
             np.mean(sk_new[nonzero_new]),
-            err_msg="Old cubic peaks should be weaker after uniaxial strain",
+            err_msg=f"axis={axis_idx}: old cubic peaks should be weaker after uniaxial strain",
         )
 
-    def test_strain_preserves_s0(self):
+    @pytest.mark.parametrize(
+        "strain_diag",
+        [
+            [0.05, 0.05, 0.05],
+            [0.05, 0.0, 0.0],
+            [0.0, 0.05, 0.0],
+            [0.0, 0.0, -0.03],
+            [0.05, -0.02, 0.03],
+        ],
+    )
+    def test_strain_preserves_s0(self, strain_diag):
         """S(0) = N is invariant under affine transformation."""
         _, perfect_pts = freud.data.UnitCell.sc().generate_system(4)
         N = len(perfect_pts)
-        strained = self._apply_strain(perfect_pts, [0.05, -0.02, 0.03])
+        strained = self._apply_strain(perfect_pts, strain_diag)
 
         k_zero = np.array([[0, 0, 0]], dtype=np.float32)
         sk = sf3d(strained.astype(np.float32), k_zero)
         np.testing.assert_allclose(
-            sk[0], N, rtol=1e-3,
-            err_msg=f"S(0) = {sk[0]:.2f} after strain, expected N={N}",
+            sk[0],
+            N,
+            rtol=1e-3,
+            err_msg=f"strain={strain_diag}: S(0) = {sk[0]:.2f}, expected N={N}",
         )
