@@ -86,56 +86,64 @@ class TestNumericalAccuracy:
 class TestCrystalSelectionRules:
     """Validate Bragg peaks are at the correct HKL indices."""
 
-    def _get_peaks(self, uc_func, replicas, K):
+    def _get_peaks(self, uc_func, replicas, K, is_allowed):
         _, points = uc_func().generate_system(replicas)
         k = crystal_kvecs(1.0, K)
         sk = sf3d(points.astype(np.float32), k)
         N = len(points)
         f = 2 * np.pi
-        peaks = {}
+        allowed, forbidden = [], []
         for i, kv in enumerate(k):
-            hkl = np.round(kv / f).astype(int)
-            if np.all(hkl == 0):
+            hkl = tuple(np.round(kv / f).astype(int))
+            if hkl == (0, 0, 0):
                 continue
-            if np.allclose(kv, hkl * f, atol=1e-6):
-                peaks[tuple(hkl)] = float(sk[i])
-        return N, peaks
+            if np.allclose(kv, np.array(hkl) * f, atol=1e-6):
+                if is_allowed(hkl):
+                    allowed.append(sk[i])
+                else:
+                    forbidden.append(sk[i])
+        return N, np.array(allowed), np.array(forbidden)
 
     def test_sc_peaks_everywhere(self):
         """SC: all integer hkl should be Bragg peaks with S(k) = N."""
-        N, peaks = self._get_peaks(freud.data.UnitCell.sc, 4, K=3)
-        for hkl, sk in peaks.items():
-            assert sk > N * NEAR_ONE, (
-                f"SC missing peak at {hkl}: S={sk:.2f}, expected ~{N}"
-            )
+        N, allowed, _ = self._get_peaks(
+            freud.data.UnitCell.sc, 4, K=3, is_allowed=lambda _: True,
+        )
+        np.testing.assert_array_less(
+            N * NEAR_ONE, allowed,
+            err_msg=f"SC: some peaks below {N * NEAR_ONE:.2f}, expected ~{N}",
+        )
 
     def test_bcc_even_sum_only(self):
         """BCC: peaks only where h+k+l is even."""
-        N, peaks = self._get_peaks(freud.data.UnitCell.bcc, 4, K=3)
-        for (h, k, l), sk in peaks.items():
-            if (h + k + l) % 2 == 0:
-                assert sk > N * NEAR_ONE, (
-                    f"BCC missing peak at ({h},{k},{l}): S={sk:.2f}"
-                )
-            else:
-                assert sk < NEAR_ZERO, (
-                    f"BCC forbidden peak at ({h},{k},{l}): S={sk:.2f}"
-                )
+        N, allowed, forbidden = self._get_peaks(
+            freud.data.UnitCell.bcc, 4, K=3,
+            is_allowed=lambda hkl: sum(hkl) % 2 == 0,
+        )
+        np.testing.assert_array_less(
+            N * NEAR_ONE, allowed,
+            err_msg=f"BCC: some allowed peaks below {N * NEAR_ONE:.2f}",
+        )
+        np.testing.assert_array_less(
+            forbidden, NEAR_ZERO,
+            err_msg=f"BCC: some forbidden peaks above {NEAR_ZERO}",
+        )
 
     def test_fcc_all_even_or_all_odd(self):
         """FCC: peaks only when h,k,l are all even or all odd."""
-        N, peaks = self._get_peaks(freud.data.UnitCell.fcc, 4, K=3)
-        for (h, k, l), sk in peaks.items():
-            all_even = h % 2 == 0 and k % 2 == 0 and l % 2 == 0
-            all_odd = h % 2 == 1 and k % 2 == 1 and l % 2 == 1
-            if all_even or all_odd:
-                assert sk > N * NEAR_ONE, (
-                    f"FCC missing peak at ({h},{k},{l}): S={sk:.2f}"
-                )
-            else:
-                assert sk < NEAR_ZERO, (
-                    f"FCC forbidden peak at ({h},{k},{l}): S={sk:.2f}"
-                )
+        N, allowed, forbidden = self._get_peaks(
+            freud.data.UnitCell.fcc, 4, K=3,
+            is_allowed=lambda hkl: (all(v % 2 == 0 for v in hkl)
+                                    or all(v % 2 == 1 for v in hkl)),
+        )
+        np.testing.assert_array_less(
+            N * NEAR_ONE, allowed,
+            err_msg=f"FCC: some allowed peaks below {N * NEAR_ONE:.2f}",
+        )
+        np.testing.assert_array_less(
+            forbidden, NEAR_ZERO,
+            err_msg=f"FCC: some forbidden peaks above {NEAR_ZERO}",
+        )
 
 
 class TestEdgeCases:
@@ -177,17 +185,15 @@ class TestEdgeCases:
         k = crystal_kvecs(1.0, K=2)
         sk = sf3d(points.astype(np.float32), k)
         f = 2 * np.pi
-        for i, kv in enumerate(k):
-            hkl = np.round(kv / f).astype(int)
-            if np.all(hkl == 0):
-                continue
-            if np.allclose(kv, hkl * f, atol=1e-6):
-                np.testing.assert_allclose(
-                    sk[i],
-                    N,
-                    rtol=RTOL,
-                    err_msg=f"Peak at {hkl}: got {sk[i]:.2f}, expected {N}",
-                )
+        bragg = [
+            sk[i] for i, kv in enumerate(k)
+            if not np.all(np.round(kv / f).astype(int) == 0)
+            and np.allclose(kv, np.round(kv / f).astype(int) * f, atol=1e-6)
+        ]
+        np.testing.assert_allclose(
+            bragg, N, rtol=RTOL,
+            err_msg=f"Bragg peaks should equal N={N}",
+        )
 
 
 class TestStatisticalProperties:
