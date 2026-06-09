@@ -1,6 +1,6 @@
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
-#include "sf3d_ocl.h"
+#include "structure_factor.h"
 
 namespace nb = nanobind;
 
