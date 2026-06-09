@@ -69,15 +69,24 @@ def sf3d(points, k_vecs):
         (Nk,) float32 array of S(k) values.
     """
     _ensure_device()
+    if _device is None:
+        msg = "No WebGPU device is available!"
+        raise ValueError(msg)
 
     pts = np.ascontiguousarray(points, dtype=np.float32).ravel()
     kvs = np.ascontiguousarray(k_vecs, dtype=np.float32).ravel()
     N = len(pts) // 3
     Nk = len(kvs) // 3
 
-    points_buf = _device.create_buffer_with_data(data=pts, usage=wgpu.BufferUsage.STORAGE)
-    k_vecs_buf = _device.create_buffer_with_data(data=kvs, usage=wgpu.BufferUsage.STORAGE)
-    output_buf = _device.create_buffer(size=Nk * 4, usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC)
+    points_buf = _device.create_buffer_with_data(
+        data=pts, usage=wgpu.BufferUsage.STORAGE
+    )
+    k_vecs_buf = _device.create_buffer_with_data(
+        data=kvs, usage=wgpu.BufferUsage.STORAGE
+    )
+    output_buf = _device.create_buffer(
+        size=Nk * 4, usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC
+    )
     params_buf = _device.create_buffer_with_data(
         data=np.array([N, Nk], dtype=np.uint32), usage=wgpu.BufferUsage.UNIFORM
     )
@@ -100,7 +109,9 @@ def sf3d(points, k_vecs):
     pass_.end()
     _device.queue.submit([encoder.finish()])
 
-    result = np.frombuffer(_device.queue.read_buffer(output_buf), dtype=np.float32).copy()
+    result = np.frombuffer(
+        _device.queue.read_buffer(output_buf), dtype=np.float32
+    ).copy()
     k_sq = np.sum(np.asarray(k_vecs, dtype=np.float32) ** 2, axis=1)
     result[k_sq < 1e-10] = 0.0
     return result

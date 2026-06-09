@@ -8,7 +8,7 @@ def pytest_configure(config):
 
 def pytest_collection_modifyitems(config, items):
     try:
-        from glsf import sf3d
+        from wgpu_diffraction import sf3d
 
         p = np.zeros((2, 3), dtype=np.float32)
         k = np.array([[1, 0, 0]], dtype=np.float32)

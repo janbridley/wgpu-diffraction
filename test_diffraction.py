@@ -1,4 +1,4 @@
-"""Tests for glsf against a float64 numpy reference.
+"""Tests for wgpu_diffraction against a float64 numpy reference.
 
 Validates numerical accuracy, crystal selection rules, edge cases,
 and statistical properties of the 3D structure factor.
@@ -7,7 +7,7 @@ and statistical properties of the 3D structure factor.
 import numpy as np
 import pytest
 
-from glsf import sf3d
+from wgpu_diffraction import sf3d
 
 RTOL = 1e-3
 ATOL = 1e-3

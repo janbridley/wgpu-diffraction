@@ -2,7 +2,7 @@
 
 import numpy as np
 import time
-from glsf import sf3d
+from wgpu_diffraction import sf3d
 
 
 def make_data(N, K, L=10.0):
