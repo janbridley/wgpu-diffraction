@@ -1,6 +1,6 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "wgpu-diffraction"
@@ -11,5 +11,5 @@ dependencies = ["numpy", "wgpu"]
 [project.optional-dependencies]
 test = ["pytest"]
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/wgpu_diffraction"]
+[tool.setuptools.packages.find]
+where = ["src"]
