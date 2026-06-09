@@ -567,3 +567,264 @@ class TestDebyeValidation:
             -ATOL, sk,
             err_msg="S(k) must be non-negative",
         )
+
+
+class TestVacancyDisorder:
+    """Structure factor with random vacancies (quenched disorder).
+
+    For a crystal with M lattice sites where each site is independently
+    occupied with probability p = 1-c, the disorder-averaged structure factor is:
+        <S(k)> = c + (1-c) S_full(k)
+    where S_full(k) is the perfect-crystal result (normalized by M).
+    """
+
+    @staticmethod
+    def _introduce_vacancies(points, vacancy_frac, rng):
+        """Remove a random fraction of points to simulate vacancies."""
+        n_remove = int(len(points) * vacancy_frac)
+        indices = rng.choice(len(points), size=n_remove, replace=False)
+        mask = np.ones(len(points), dtype=bool)
+        mask[indices] = False
+        return points[mask]
+
+    @staticmethod
+    def _bragg_indices(k):
+        f = 2 * np.pi
+        hkl = np.round(k / f).astype(int)
+        on_bragg = np.all(np.abs(k - hkl * f) < 1e-6, axis=1)
+        nonzero = np.any(hkl != 0, axis=1)
+        return np.where(on_bragg & nonzero)[0]
+
+    @pytest.mark.parametrize("c", [0.05, 0.15])
+    def test_bragg_peak_reduction(self, c):
+        """Bragg peaks follow <S(k)> = c + (1-c) S_full(k)."""
+        _, perfect_pts = freud.data.UnitCell.sc().generate_system(4)
+        k = crystal_kvecs(1.0, K=3)
+        bragg_idx = self._bragg_indices(k)
+
+        s_full = sf3d(perfect_pts.astype(np.float32), k)
+        expected = c + (1 - c) * s_full[bragg_idx].astype(np.float64)
+
+        n_samples = 300
+        rng = np.random.default_rng(42)
+        sk_sum = np.zeros(len(bragg_idx))
+        for _ in range(n_samples):
+            pts = self._introduce_vacancies(perfect_pts, c, rng)
+            sk_sum += sf3d(pts.astype(np.float32), k)[bragg_idx]
+        sk_mean = sk_sum / n_samples
+
+        np.testing.assert_allclose(
+            sk_mean, expected, rtol=0.10,
+            err_msg=f"c={c}: vacancy Bragg peak mismatch",
+        )
+
+    @pytest.mark.parametrize("c", [0.05, 0.15])
+    def test_diffuse_background(self, c):
+        """Off-Bragg diffuse scattering ~ c from vacancy disorder."""
+        _, perfect_pts = freud.data.UnitCell.sc().generate_system(4)
+
+        # k-vectors at half-integer hkl — off the reciprocal lattice
+        f = 2 * np.pi
+        n = np.arange(-3, 4)
+        H, K_, L = np.meshgrid(n, n, n, indexing="ij")
+        k = np.stack([H.ravel(), K_.ravel(), L.ravel()], axis=1).astype(np.float32)
+        k = k * f + np.array([f / 2, 0, 0], dtype=np.float32)
+        nonzero = np.any(k != 0, axis=1)
+        k = k[nonzero]
+
+        n_samples = 300
+        rng = np.random.default_rng(99)
+        sk_sum = np.zeros(len(k))
+        for _ in range(n_samples):
+            pts = self._introduce_vacancies(perfect_pts, c, rng)
+            sk_sum += sf3d(pts.astype(np.float32), k)
+        sk_mean = sk_sum / n_samples
+
+        np.testing.assert_allclose(
+            np.mean(sk_mean), c, atol=0.05,
+            err_msg=f"c={c}: off-Bragg <S>={np.mean(sk_mean):.4f}, expected ~{c}",
+        )
+
+    def test_monotonic_with_concentration(self):
+        """Higher vacancy fraction → lower Bragg intensity."""
+        _, perfect_pts = freud.data.UnitCell.sc().generate_system(4)
+        k = crystal_kvecs(1.0, K=2)
+        bragg_idx = self._bragg_indices(k)
+
+        n_samples = 50
+        rng = np.random.default_rng(7)
+
+        def avg_bragg(c):
+            sk_sum = np.zeros(len(bragg_idx))
+            for _ in range(n_samples):
+                pts = self._introduce_vacancies(perfect_pts, c, rng)
+                sk_sum += sf3d(pts.astype(np.float32), k)[bragg_idx]
+            return np.mean(sk_sum) / n_samples
+
+        mean_low = avg_bragg(0.02)
+        mean_high = avg_bragg(0.20)
+        np.testing.assert_array_less(
+            mean_high, mean_low,
+            err_msg=f"Higher c should reduce Bragg: c=0.20 mean={mean_high:.2f} >= c=0.02 mean={mean_low:.2f}",
+        )
+
+
+class TestLauePeakProfile:
+    """Finite-size peak broadening follows the Laue function.
+
+    For an MxMxM SC crystal (a=1), near Bragg peak G = 2π(h₀,k₀,l₀) along x:
+        S(G + δ x̂) = (1/M) sin²(Mδ/2) / sin²(δ/2)
+    At exact Bragg peak (δ=0): S = M³ = N.
+    First zeros at δ = ±2π/M.
+    """
+
+    @staticmethod
+    def _laue_1d(delta, M):
+        """Laue function: sin²(Mδ/2) / (M sin²(δ/2)), with limit M at δ=0."""
+        delta = np.asarray(delta, dtype=np.float64)
+        result = np.empty_like(delta)
+        near_zero = np.abs(delta) < 1e-10
+        far = ~near_zero
+        result[near_zero] = M
+        if np.any(far):
+            hd = delta[far] / 2
+            result[far] = np.sin(M * hd) ** 2 / (M * np.sin(hd) ** 2)
+        return result
+
+    @pytest.mark.parametrize("M", [4, 6])
+    def test_peak_profile_through_bragg(self, M):
+        """Peak shape matches the Laue function through (2π,0,0)."""
+        _, points = freud.data.UnitCell.sc().generate_system(M)
+        f = 2 * np.pi
+
+        delta = np.linspace(-np.pi, np.pi, 500, dtype=np.float32)
+        k_vecs = np.zeros((len(delta), 3), dtype=np.float32)
+        k_vecs[:, 0] = f + delta
+
+        sk = sf3d(points.astype(np.float32), k_vecs)
+
+        # Analytical: x-profile × M² (y,z still at Bragg peak)
+        expected = self._laue_1d(delta.astype(np.float64), M) * M ** 2
+
+        np.testing.assert_allclose(
+            sk.astype(np.float64), expected, rtol=5e-4, atol=5e-5,
+            err_msg=f"M={M}: Laue profile mismatch",
+        )
+
+    def test_peak_width_scales_with_M(self):
+        """Larger crystal → narrower peaks (FWHM ~ 1/M)."""
+        fwhms = {}
+        for M in [4, 8]:
+            _, points = freud.data.UnitCell.sc().generate_system(M)
+            f = 2 * np.pi
+            delta = np.linspace(-np.pi, np.pi, 1000, dtype=np.float32)
+            k_vecs = np.zeros((len(delta), 3), dtype=np.float32)
+            k_vecs[:, 0] = f + delta
+            sk = sf3d(points.astype(np.float32), k_vecs)
+
+            half_max = sk.max() / 2
+            above = np.where(sk >= half_max)[0]
+            fwhms[M] = delta[above[-1]] - delta[above[0]]
+
+        np.testing.assert_array_less(
+            fwhms[8] * 1.5, fwhms[4],
+            err_msg=f"FWHM should scale ~1/M: M=4 fwhm={fwhms[4]:.4f}, M=8 fwhm={fwhms[8]:.4f}",
+        )
+
+
+def orthorhombic_kvecs(ax, ay, az, K):
+    """Generate k-vectors at (2πh/ax, 2πk/ay, 2πl/az) for integer h,k,l."""
+    n = np.arange(-K, K + 1)
+    H, K_, L = np.meshgrid(n, n, n, indexing="ij")
+    kvecs = np.stack([H.ravel(), K_.ravel(), L.ravel()], axis=1).astype(np.float64)
+    kvecs[:, 0] *= 2 * np.pi / ax
+    kvecs[:, 1] *= 2 * np.pi / ay
+    kvecs[:, 2] *= 2 * np.pi / az
+    return kvecs.astype(np.float32)
+
+
+class TestUniformStrain:
+    """Affine strain shifts Bragg peaks via G' = (I+ε)⁻ᵀ G.
+
+    For diagonal strain ε = diag(ε_x, ε_y, ε_z), the new reciprocal lattice
+    has spacings 2π/(a(1+ε_i)) along each axis.
+    """
+
+    @staticmethod
+    def _apply_strain(points, strain_diag):
+        """Apply diagonal affine strain: r → diag(1+ε) r."""
+        scale = (1 + np.asarray(strain_diag, dtype=np.float64)).astype(np.float32)
+        return points * scale
+
+    @staticmethod
+    def _bragg_indices(k):
+        f = 2 * np.pi
+        hkl = np.round(k / f).astype(int)
+        on_bragg = np.all(np.abs(k - hkl * f) < 1e-6, axis=1)
+        nonzero = np.any(hkl != 0, axis=1)
+        return np.where(on_bragg & nonzero)[0]
+
+    def test_hydrostatic_strain_shifts_peaks(self):
+        """Hydrostatic ε=0.05I: peaks shift from a=1 to a=1.05."""
+        _, perfect_pts = freud.data.UnitCell.sc().generate_system(4)
+        N = len(perfect_pts)
+        strained = self._apply_strain(perfect_pts, [0.05, 0.05, 0.05])
+
+        k_old = crystal_kvecs(1.0, K=3)
+        k_new = crystal_kvecs(1.05, K=3)
+
+        sk_at_old = sf3d(strained.astype(np.float32), k_old)
+        sk_at_new = sf3d(strained.astype(np.float32), k_new)
+
+        # New lattice: all non-zero hkl are Bragg peaks for the strained crystal
+        nonzero_new = np.any(k_new != 0, axis=1)
+        # Old lattice: filter to Bragg positions (integer hkl at 2π spacing)
+        bragg_old = self._bragg_indices(k_old)
+
+        np.testing.assert_allclose(
+            sk_at_new[nonzero_new], N, rtol=RTOL,
+            err_msg="Strained crystal peaks at new positions should equal N",
+        )
+        np.testing.assert_array_less(
+            np.mean(sk_at_old[bragg_old]),
+            np.mean(sk_at_new[nonzero_new]),
+            err_msg="Old peak positions should be weaker than new after strain",
+        )
+
+    def test_uniaxial_strain_shifts_peaks(self):
+        """Uniaxial ε_x=0.05: only x-peaks shift, y/z unchanged."""
+        _, perfect_pts = freud.data.UnitCell.sc().generate_system(4)
+        N = len(perfect_pts)
+        strained = self._apply_strain(perfect_pts, [0.05, 0.0, 0.0])
+
+        k_new = orthorhombic_kvecs(1.05, 1.0, 1.0, K=3)
+        k_old = crystal_kvecs(1.0, K=3)
+
+        sk_new = sf3d(strained.astype(np.float32), k_new)
+        sk_old = sf3d(strained.astype(np.float32), k_old)
+
+        nonzero_new = np.any(k_new != 0, axis=1)
+        bragg_old = self._bragg_indices(k_old)
+
+        np.testing.assert_allclose(
+            sk_new[nonzero_new], N, rtol=RTOL,
+            err_msg="Uniaxial strain: peaks at new orthorhombic positions should equal N",
+        )
+        np.testing.assert_array_less(
+            np.mean(sk_old[bragg_old]),
+            np.mean(sk_new[nonzero_new]),
+            err_msg="Old cubic peaks should be weaker after uniaxial strain",
+        )
+
+    def test_strain_preserves_s0(self):
+        """S(0) = N is invariant under affine transformation."""
+        _, perfect_pts = freud.data.UnitCell.sc().generate_system(4)
+        N = len(perfect_pts)
+        strained = self._apply_strain(perfect_pts, [0.05, -0.02, 0.03])
+
+        k_zero = np.array([[0, 0, 0]], dtype=np.float32)
+        sk = sf3d(strained.astype(np.float32), k_zero)
+        np.testing.assert_allclose(
+            sk[0], N, rtol=1e-3,
+            err_msg=f"S(0) = {sk[0]:.2f} after strain, expected N={N}",
+        )
