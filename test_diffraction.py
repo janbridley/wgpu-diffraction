@@ -12,8 +12,8 @@ import freud.data
 
 from wgpu_diffraction import sf3d
 
-RTOL = 1e-3
-ATOL = 1e-3
+RTOL = 1e-4
+ATOL = 1e-4
 
 
 def direct_ft_numpy(points, k_vecs):
@@ -103,16 +103,16 @@ class TestCrystalSelectionRules:
         """SC: all integer hkl should be Bragg peaks with S(k) = N."""
         N, peaks = self._get_peaks(freud.data.UnitCell.sc, 4, K=3)
         for hkl, sk in peaks.items():
-            assert sk > N * 0.9, f"SC missing peak at {hkl}: S={sk:.2f}, expected ~{N}"
+            assert sk > N * 0.99, f"SC missing peak at {hkl}: S={sk:.2f}, expected ~{N}"
 
     def test_bcc_even_sum_only(self):
         """BCC: peaks only where h+k+l is even."""
         N, peaks = self._get_peaks(freud.data.UnitCell.bcc, 4, K=3)
         for (h, k, l), sk in peaks.items():
             if (h + k + l) % 2 == 0:
-                assert sk > N * 0.9, f"BCC missing peak at ({h},{k},{l}): S={sk:.2f}"
+                assert sk > N * 0.99, f"BCC missing peak at ({h},{k},{l}): S={sk:.2f}"
             else:
-                assert sk < 1.0, f"BCC forbidden peak at ({h},{k},{l}): S={sk:.2f}"
+                assert sk < 0.01, f"BCC forbidden peak at ({h},{k},{l}): S={sk:.2f}"
 
     def test_fcc_all_even_or_all_odd(self):
         """FCC: peaks only when h,k,l are all even or all odd."""
@@ -121,9 +121,9 @@ class TestCrystalSelectionRules:
             all_even = h % 2 == 0 and k % 2 == 0 and l % 2 == 0
             all_odd = h % 2 == 1 and k % 2 == 1 and l % 2 == 1
             if all_even or all_odd:
-                assert sk > N * 0.9, f"FCC missing peak at ({h},{k},{l}): S={sk:.2f}"
+                assert sk > N * 0.99, f"FCC missing peak at ({h},{k},{l}): S={sk:.2f}"
             else:
-                assert sk < 1.0, f"FCC forbidden peak at ({h},{k},{l}): S={sk:.2f}"
+                assert sk < 0.01, f"FCC forbidden peak at ({h},{k},{l}): S={sk:.2f}"
 
 
 class TestEdgeCases:
@@ -149,14 +149,14 @@ class TestEdgeCases:
         points = np.array([[0, 0, 0], [np.pi, 0, 0]], dtype=np.float32)
         k_vecs = np.array([[1, 0, 0]], dtype=np.float32)
         sk = sf3d(points, k_vecs)
-        np.testing.assert_allclose(sk, [0.0], atol=1e-5)
+        np.testing.assert_allclose(sk, [0.0], atol=1e-6)
 
     def test_constructive_interference(self):
         """Two coincident points: S(k) = 2."""
         points = np.array([[1, 0, 0], [1, 0, 0]], dtype=np.float32)
         k_vecs = np.array([[2, 0, 0]], dtype=np.float32)
         sk = sf3d(points, k_vecs)
-        np.testing.assert_allclose(sk, [2.0], atol=1e-5)
+        np.testing.assert_allclose(sk, [2.0], atol=1e-6)
 
     def test_perfect_crystal_peak_equals_N(self):
         """For a perfect SC crystal, S(k) should equal N at Bragg peaks."""
@@ -173,7 +173,7 @@ class TestEdgeCases:
                 np.testing.assert_allclose(
                     sk[i],
                     N,
-                    rtol=1e-3,
+                    rtol=1e-4,
                     err_msg=f"Peak at {hkl}: got {sk[i]:.2f}, expected {N}",
                 )
 
@@ -188,7 +188,7 @@ class TestStatisticalProperties:
         sk = sf3d(points.astype(np.float32), k_vecs)
         nonzero = sk != 0.0
         mean_sk = np.mean(sk[nonzero])
-        assert abs(mean_sk - 1.0) < 0.1, f"Mean S(k) = {mean_sk:.4f}, expected ~1.0"
+        assert abs(mean_sk - 1.0) < 0.05, f"Mean S(k) = {mean_sk:.4f}, expected ~1.0"
 
     def test_variance_decreases_with_N(self):
         """Var(S(k)) for random systems ~ 2/N, so larger N gives smaller variance."""
