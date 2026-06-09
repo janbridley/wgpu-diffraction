@@ -107,41 +107,54 @@ class TestCrystalSelectionRules:
     def test_sc_peaks_everywhere(self):
         """SC: all integer hkl should be Bragg peaks with S(k) = N."""
         N, allowed, _ = self._get_peaks(
-            freud.data.UnitCell.sc, 4, K=3, is_allowed=lambda _: True,
+            freud.data.UnitCell.sc,
+            4,
+            K=3,
+            is_allowed=lambda _: True,
         )
         np.testing.assert_array_less(
-            N * NEAR_ONE, allowed,
+            N * NEAR_ONE,
+            allowed,
             err_msg=f"SC: some peaks below {N * NEAR_ONE:.2f}, expected ~{N}",
         )
 
     def test_bcc_even_sum_only(self):
         """BCC: peaks only where h+k+l is even."""
         N, allowed, forbidden = self._get_peaks(
-            freud.data.UnitCell.bcc, 4, K=3,
+            freud.data.UnitCell.bcc,
+            4,
+            K=3,
             is_allowed=lambda hkl: sum(hkl) % 2 == 0,
         )
         np.testing.assert_array_less(
-            N * NEAR_ONE, allowed,
+            N * NEAR_ONE,
+            allowed,
             err_msg=f"BCC: some allowed peaks below {N * NEAR_ONE:.2f}",
         )
         np.testing.assert_array_less(
-            forbidden, NEAR_ZERO,
+            forbidden,
+            NEAR_ZERO,
             err_msg=f"BCC: some forbidden peaks above {NEAR_ZERO}",
         )
 
     def test_fcc_all_even_or_all_odd(self):
         """FCC: peaks only when h,k,l are all even or all odd."""
         N, allowed, forbidden = self._get_peaks(
-            freud.data.UnitCell.fcc, 4, K=3,
-            is_allowed=lambda hkl: (all(v % 2 == 0 for v in hkl)
-                                    or all(v % 2 == 1 for v in hkl)),
+            freud.data.UnitCell.fcc,
+            4,
+            K=3,
+            is_allowed=lambda hkl: (
+                all(v % 2 == 0 for v in hkl) or all(v % 2 == 1 for v in hkl)
+            ),
         )
         np.testing.assert_array_less(
-            N * NEAR_ONE, allowed,
+            N * NEAR_ONE,
+            allowed,
             err_msg=f"FCC: some allowed peaks below {N * NEAR_ONE:.2f}",
         )
         np.testing.assert_array_less(
-            forbidden, NEAR_ZERO,
+            forbidden,
+            NEAR_ZERO,
             err_msg=f"FCC: some forbidden peaks above {NEAR_ZERO}",
         )
 
@@ -186,13 +199,105 @@ class TestEdgeCases:
         sk = sf3d(points.astype(np.float32), k)
         f = 2 * np.pi
         bragg = [
-            sk[i] for i, kv in enumerate(k)
+            sk[i]
+            for i, kv in enumerate(k)
             if not np.all(np.round(kv / f).astype(int) == 0)
             and np.allclose(kv, np.round(kv / f).astype(int) * f, atol=1e-6)
         ]
         np.testing.assert_allclose(
-            bragg, N, rtol=RTOL,
+            bragg,
+            N,
+            rtol=RTOL,
             err_msg=f"Bragg peaks should equal N={N}",
+        )
+
+
+_DIAMOND_UC = freud.data.UnitCell(
+    freud.Box.cube(1.0),
+    np.array([
+        [0, 0, 0],
+        [0.5, 0.5, 0],
+        [0, 0.5, 0.5],
+        [0.5, 0, 0.5],
+        [0.25, 0.25, 0.25],
+        [0.75, 0.75, 0.25],
+        [0.25, 0.75, 0.75],
+        [0.75, 0.25, 0.75],
+    ]),
+)
+
+
+class TestDiamondStructureFactor:
+    """Diamond cubic selection rules (see Wikipedia: Structure factor § Examples).
+
+    8 atoms per cubic cell. For identical particles (f=1):
+      h+k+l = 4N     → S(k) = N   (all 8 basis atoms in phase)
+      h+k+l = 2N+1   → S(k) = N/2 (partial cancellation)
+      h+k+l = 4N+2   → S(k) = 0   (total cancellation)
+      mixed parity    → S(k) = 0   (FCC sublattice extinction)
+    """
+
+    def _get_diamond_peaks(self, replicas, K):
+        _, points = _DIAMOND_UC.generate_system(replicas)
+        N = len(points)
+        k = crystal_kvecs(1.0, K)
+        sk = sf3d(points.astype(np.float32), k)
+
+        f = 2 * np.pi
+        hkl = np.round(k / f).astype(int)
+        on_bragg = np.all(np.abs(k - hkl * f) < 1e-6, axis=1)
+        nonzero = np.any(hkl != 0, axis=1)
+        mask = on_bragg & nonzero
+
+        h, k_, l = hkl[mask, 0], hkl[mask, 1], hkl[mask, 2]
+        s = sk[mask]
+        parity_uniform = (h % 2 == k_ % 2) & (k_ % 2 == l % 2)
+        hkl_sum = h + k_ + l
+
+        return (
+            N,
+            s[parity_uniform & (hkl_sum % 4 == 0)],
+            s[parity_uniform & (hkl_sum % 2 == 1)],
+            s[parity_uniform & (hkl_sum % 4 == 2)],
+            s[~parity_uniform],
+        )
+
+    def test_mixed_parity_extinct(self):
+        """Mixed parity hkl are extinct (FCC sublattice extinction)."""
+        _, _, _, _, mixed = self._get_diamond_peaks(4, K=3)
+        np.testing.assert_array_less(
+            mixed,
+            NEAR_ZERO,
+            err_msg="Diamond: mixed-parity peaks should be extinct",
+        )
+
+    def test_mod4_equals_0_gives_full_intensity(self):
+        """h+k+l ≡ 0 mod 4 → S(k) = N (all 8 atoms in phase)."""
+        N, mod4_0, _, _, _ = self._get_diamond_peaks(4, K=3)
+        np.testing.assert_allclose(
+            mod4_0,
+            N,
+            rtol=RTOL,
+            err_msg=f"Diamond: h+k+l=4N peaks should equal N={N}",
+        )
+
+    def test_odd_sum_gives_half_intensity(self):
+        """h+k+l odd → S(k) = N/2 (partial cancellation)."""
+        N, _, odd, _, _ = self._get_diamond_peaks(4, K=3)
+        np.testing.assert_allclose(
+            odd,
+            N / 2,
+            rtol=RTOL,
+            err_msg=f"Diamond: h+k+l odd peaks should equal N/2={N / 2}",
+        )
+
+    def test_mod4_equals_2_extinct(self):
+        """h+k+l ≡ 2 mod 4 → S(k) = 0 (total cancellation)."""
+        _, _, _, mod4_2, _ = self._get_diamond_peaks(4, K=3)
+        np.testing.assert_array_less(
+            mod4_2,
+            NEAR_ZERO,
+            err_msg="Diamond: h+k+l=4N+2 peaks should be extinct",
         )
 
 
