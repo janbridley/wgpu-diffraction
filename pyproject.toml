@@ -9,7 +9,7 @@ requires-python = ">=3.12"
 dependencies = ["numpy", "wgpu"]
 
 [project.optional-dependencies]
-test = ["pytest"]
+test = ["pytest", "freud-analysis"]
 
 [dependency-groups]
-test = ["pytest"]
+test = ["pytest", "freud-analysis"]
