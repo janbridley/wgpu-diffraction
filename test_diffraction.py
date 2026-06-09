@@ -14,6 +14,8 @@ from wgpu_diffraction import sf3d
 
 RTOL = 5e-5
 ATOL = 5e-6
+NEAR_ONE = 1.0 - RTOL
+NEAR_ZERO = RTOL
 
 
 def direct_ft_numpy(points, k_vecs):
@@ -103,16 +105,22 @@ class TestCrystalSelectionRules:
         """SC: all integer hkl should be Bragg peaks with S(k) = N."""
         N, peaks = self._get_peaks(freud.data.UnitCell.sc, 4, K=3)
         for hkl, sk in peaks.items():
-            assert sk > N * 0.99, f"SC missing peak at {hkl}: S={sk:.2f}, expected ~{N}"
+            assert sk > N * NEAR_ONE, (
+                f"SC missing peak at {hkl}: S={sk:.2f}, expected ~{N}"
+            )
 
     def test_bcc_even_sum_only(self):
         """BCC: peaks only where h+k+l is even."""
         N, peaks = self._get_peaks(freud.data.UnitCell.bcc, 4, K=3)
         for (h, k, l), sk in peaks.items():
             if (h + k + l) % 2 == 0:
-                assert sk > N * 0.99, f"BCC missing peak at ({h},{k},{l}): S={sk:.2f}"
+                assert sk > N * NEAR_ONE, (
+                    f"BCC missing peak at ({h},{k},{l}): S={sk:.2f}"
+                )
             else:
-                assert sk < 0.01, f"BCC forbidden peak at ({h},{k},{l}): S={sk:.2f}"
+                assert sk < NEAR_ZERO, (
+                    f"BCC forbidden peak at ({h},{k},{l}): S={sk:.2f}"
+                )
 
     def test_fcc_all_even_or_all_odd(self):
         """FCC: peaks only when h,k,l are all even or all odd."""
@@ -121,9 +129,13 @@ class TestCrystalSelectionRules:
             all_even = h % 2 == 0 and k % 2 == 0 and l % 2 == 0
             all_odd = h % 2 == 1 and k % 2 == 1 and l % 2 == 1
             if all_even or all_odd:
-                assert sk > N * 0.99, f"FCC missing peak at ({h},{k},{l}): S={sk:.2f}"
+                assert sk > N * NEAR_ONE, (
+                    f"FCC missing peak at ({h},{k},{l}): S={sk:.2f}"
+                )
             else:
-                assert sk < 0.01, f"FCC forbidden peak at ({h},{k},{l}): S={sk:.2f}"
+                assert sk < NEAR_ZERO, (
+                    f"FCC forbidden peak at ({h},{k},{l}): S={sk:.2f}"
+                )
 
 
 class TestEdgeCases:
