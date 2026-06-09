@@ -200,7 +200,9 @@ class TestStatisticalProperties:
         sk = sf3d(points.astype(np.float32), k_vecs)
         nonzero = sk != 0.0
         mean_sk = np.mean(sk[nonzero])
-        assert abs(mean_sk - 1.0) < 0.05, f"Mean S(k) = {mean_sk:.4f}, expected ~1.0"
+        np.testing.assert_allclose(
+            mean_sk, 1.0, atol=0.05, err_msg=f"Mean S(k) = {mean_sk:.4f}, expected ~1.0"
+        )
 
     def test_variance_decreases_with_N(self):
         """Var(S(k)) for random systems ~ 2/N, so larger N gives smaller variance."""
@@ -211,6 +213,8 @@ class TestStatisticalProperties:
             sk = sf3d(points.astype(np.float32), k_vecs)
             nonzero = sk != 0.0
             vars_[N] = np.var(sk[nonzero])
-        assert vars_[2000] < vars_[500], (
-            f"Var(N=2000)={vars_[2000]:.4f} should be < Var(N=500)={vars_[500]:.4f}"
+        np.testing.assert_array_less(
+            vars_[2000],
+            vars_[500],
+            err_msg=f"Var(N=2000)={vars_[2000]:.4f} should be < Var(N=500)={vars_[500]:.4f}",
         )
