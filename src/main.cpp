@@ -4,7 +4,9 @@
 
 namespace nb = nanobind;
 
-nb::ndarray<nb::numpy, float, nb::shape<-1>> 
+static SF3DOpenCL engine;
+
+nb::ndarray<nb::numpy, float, nb::shape<-1>>
 sf3d(nb::ndarray<float, nb::shape<-1, 3>> points,
      nb::ndarray<float, nb::shape<-1, 3>> k_vecs) {
              
@@ -19,9 +21,6 @@ sf3d(nb::ndarray<float, nb::shape<-1, 3>> points,
         delete[] (float *) p;
     });
 
-    // Use a static instance to keep the GPU context alive between calls
-    static SF3DOpenCL engine;
-    
     engine.compute((const float*)points.data(), (const float*)k_vecs.data(), (unsigned int)N, (unsigned int)Nk, data);
     
     return nb::ndarray<nb::numpy, float, nb::shape<-1>>(
