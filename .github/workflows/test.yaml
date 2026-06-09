@@ -4,9 +4,9 @@ on: [push, pull_request]
 
 jobs:
   test:
-    runs-on: macos-latest # Runner needs to have WebGPU in order for tests to function.
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
-      - run: uv pip install -e ".[test]" --system
-      - run: pytest -v
+      - run: uv venv && source .venv/bin/activate && uv pip install -e ".[test]"
+      - run: source .venv/bin/activate && pytest -v
