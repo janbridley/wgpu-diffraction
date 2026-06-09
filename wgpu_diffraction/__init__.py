@@ -100,9 +100,6 @@ def sf3d(points, k_vecs):
     pass_.end()
     _device.queue.submit([encoder.finish()])
 
-    result = np.frombuffer(
+    return np.frombuffer(
         _device.queue.read_buffer(output_buf), dtype=np.float32
     ).copy()
-    k_sq = np.sum(np.asarray(k_vecs, dtype=np.float32) ** 2, axis=1)
-    result[k_sq < 1e-10] = 0.0
-    return result
