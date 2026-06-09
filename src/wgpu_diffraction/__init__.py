@@ -41,21 +41,17 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 }
 """
 
-_device = None
-_pipeline = None
-
-
-def _ensure_device():
-    global _device, _pipeline
-    if _device is not None:
-        return
-    adapter = wgpu.gpu.request_adapter_sync(power_preference="high-performance")
-    _device = adapter.request_device_sync()
-    shader = _device.create_shader_module(code=_SHADER)
+try:
+    _adapter = wgpu.gpu.request_adapter_sync(power_preference="high-performance")
+    _device = _adapter.request_device_sync()
+    _shader = _device.create_shader_module(code=_SHADER)
     _pipeline = _device.create_compute_pipeline(
         layout="auto",
-        compute={"module": shader, "entry_point": "main"},
+        compute={"module": _shader, "entry_point": "main"},
     )
+except Exception as e:
+    msg = f"No WebGPU device available: {e}"
+    raise RuntimeError(msg) from e
 
 
 def sf3d(points, k_vecs):
@@ -68,11 +64,6 @@ def sf3d(points, k_vecs):
     Returns:
         (Nk,) float32 array of S(k) values.
     """
-    _ensure_device()
-    if _device is None:
-        msg = "No WebGPU device is available!"
-        raise ValueError(msg)
-
     pts = np.ascontiguousarray(points, dtype=np.float32).ravel()
     kvs = np.ascontiguousarray(k_vecs, dtype=np.float32).ravel()
     N = len(pts) // 3
