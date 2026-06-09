@@ -10,3 +10,6 @@ dependencies = ["numpy", "wgpu"]
 
 [project.optional-dependencies]
 test = ["pytest"]
+
+[dependency-groups]
+test = ["pytest"]
