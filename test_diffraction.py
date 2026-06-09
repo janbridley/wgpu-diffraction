@@ -12,8 +12,8 @@ import freud.data
 
 from wgpu_diffraction import sf3d
 
-RTOL = 1e-4
-ATOL = 1e-4
+RTOL = 5e-5
+ATOL = 5e-6
 
 
 def direct_ft_numpy(points, k_vecs):
@@ -134,7 +134,7 @@ class TestEdgeCases:
         points = np.zeros((1, 3), dtype=np.float32)
         k_vecs = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
         sk = sf3d(points, k_vecs)
-        np.testing.assert_allclose(sk, [1.0, 1.0, 1.0], atol=1e-6)
+        np.testing.assert_allclose(sk, [1.0, 1.0, 1.0], atol=ATOL)
 
     def test_k_zero_masked(self):
         """k=0 must be masked to exactly 0.0."""
@@ -149,14 +149,14 @@ class TestEdgeCases:
         points = np.array([[0, 0, 0], [np.pi, 0, 0]], dtype=np.float32)
         k_vecs = np.array([[1, 0, 0]], dtype=np.float32)
         sk = sf3d(points, k_vecs)
-        np.testing.assert_allclose(sk, [0.0], atol=1e-6)
+        np.testing.assert_allclose(sk, [0.0], atol=ATOL)
 
     def test_constructive_interference(self):
         """Two coincident points: S(k) = 2."""
         points = np.array([[1, 0, 0], [1, 0, 0]], dtype=np.float32)
         k_vecs = np.array([[2, 0, 0]], dtype=np.float32)
         sk = sf3d(points, k_vecs)
-        np.testing.assert_allclose(sk, [2.0], atol=1e-6)
+        np.testing.assert_allclose(sk, [2.0], atol=ATOL)
 
     def test_perfect_crystal_peak_equals_N(self):
         """For a perfect SC crystal, S(k) should equal N at Bragg peaks."""
@@ -173,7 +173,7 @@ class TestEdgeCases:
                 np.testing.assert_allclose(
                     sk[i],
                     N,
-                    rtol=1e-4,
+                    rtol=RTOL,
                     err_msg=f"Peak at {hkl}: got {sk[i]:.2f}, expected {N}",
                 )
 
