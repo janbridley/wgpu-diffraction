@@ -27,19 +27,9 @@ def direct_ft_numpy(points, k_vecs):
     return ((c**2 + s**2) / N).astype(np.float64)
 
 
-def box_kvecs(L, K):
-    """Generate k-vectors on a reciprocal box grid 2pi/L * (h,k,l)."""
+def crystal_kvecs(L, K):
+    """Generate k-vectors at reciprocal lattice points 2pi/L * (h,k,l)."""
     f = 2 * np.pi / L
-    n = np.arange(-K, K + 1)
-    NX, NY, NZ = np.meshgrid(n, n, n, indexing="ij")
-    return (np.stack([NX.ravel(), NY.ravel(), NZ.ravel()], axis=1) * f).astype(
-        np.float32
-    )
-
-
-def crystal_kvecs(a, K):
-    """Generate k-vectors at crystal reciprocal lattice 2pi/a * (h,k,l)."""
-    f = 2 * np.pi / a
     n = np.arange(-K, K + 1)
     NX, NY, NZ = np.meshgrid(n, n, n, indexing="ij")
     return (np.stack([NX.ravel(), NY.ravel(), NZ.ravel()], axis=1) * f).astype(
@@ -59,14 +49,14 @@ class TestNumericalAccuracy:
     @pytest.mark.parametrize("replicas", [2, 4, 6])
     def test_crystal_accuracy(self, name, uc_func, replicas):
         box, points = uc_func().generate_system(replicas)
-        k_vecs = box_kvecs(box.Lx, K=5)
+        k_vecs = crystal_kvecs(box.Lx, K=5)
         sk_gpu = sf3d(points.astype(np.float32), k_vecs)
         sk_ref = direct_ft_numpy(points, k_vecs)
         np.testing.assert_allclose(sk_gpu, sk_ref, rtol=RTOL, atol=ATOL)
 
     def test_random_accuracy(self):
         _, points = freud.data.make_random_system(10.0, 1000, seed=42)
-        k_vecs = box_kvecs(10.0, K=3)
+        k_vecs = crystal_kvecs(10.0, K=3)
         sk_gpu = sf3d(points.astype(np.float32), k_vecs)
         sk_ref = direct_ft_numpy(points, k_vecs)
         np.testing.assert_allclose(sk_gpu, sk_ref, rtol=RTOL, atol=ATOL)
@@ -74,7 +64,7 @@ class TestNumericalAccuracy:
     def test_noisy_crystal_accuracy(self):
         uc = freud.data.UnitCell.fcc()
         box, points = uc.generate_system(4, sigma_noise=0.05, seed=42)
-        k_vecs = box_kvecs(box.Lx, K=5)
+        k_vecs = crystal_kvecs(box.Lx, K=5)
         sk_gpu = sf3d(points.astype(np.float32), k_vecs)
         sk_ref = direct_ft_numpy(points, k_vecs)
         np.testing.assert_allclose(sk_gpu, sk_ref, rtol=RTOL, atol=ATOL)
@@ -297,6 +287,108 @@ class TestDiamondStructureFactor:
             err_msg="Diamond: h+k+l=4N+2 peaks should be extinct",
         )
 
+class TestDebyeWaller:
+    """Debye-Waller factor validation for crystals with Gaussian noise.
+
+    For positions r_i = R_i + δ_i with independent δ_i ~ N(0, σ²I),
+    the ensemble-averaged structure factor has a closed form:
+        <S(k)> = 1 + exp(-σ²|k|²) × (S₀(k) - 1)
+    where S₀(k) is the perfect-crystal structure factor.
+    """
+
+    @staticmethod
+    def _bragg_indices(k, K_max):
+        """Return indices of k-vectors that lie on the reciprocal lattice."""
+        f = 2 * np.pi
+        hkl = np.round(k / f).astype(int)
+        on_bragg = np.all(np.abs(k - hkl * f) < 1e-6, axis=1)
+        nonzero = np.any(hkl != 0, axis=1)
+        return np.where(on_bragg & nonzero)[0]
+
+    @pytest.mark.parametrize("sigma", [0.01, 0.05, 0.1, 0.2])
+    def test_bragg_peak_attenuation(self, sigma):
+        """Bragg peak intensity is damped by exp(-σ²|k|²) (Debye-Waller factor)."""
+        _, perfect_pts = freud.data.UnitCell.sc().generate_system(3)
+        k = crystal_kvecs(1.0, K=3)
+        bragg_idx = self._bragg_indices(k, K_max=3)
+
+        # Compute perfect-crystal S₀(k) at Bragg peaks
+        s0 = sf3d(perfect_pts.astype(np.float32), k)
+        s0_bragg = s0[bragg_idx]
+        k_bragg = k[bragg_idx]
+        k_sq_bragg = np.sum(k_bragg.astype(np.float64) ** 2, axis=1)
+
+        # Expected: <S(k)> = 1 + exp(-σ²k²) × (S₀(k) - 1)
+        dwf = np.exp(-sigma ** 2 * k_sq_bragg)
+        expected = 1.0 + dwf * (s0_bragg.astype(np.float64) - 1.0)
+
+        # Only test peaks where the signal is still above the diffuse background (~1)
+        testable = expected > 2.0
+        if not np.any(testable):
+            pytest.skip(f"σ={sigma}: no Bragg peaks with measurable DWF")
+
+        # Average over noisy realizations
+        n_samples = 300
+        rng = np.random.default_rng(42)
+        sk_sum = np.zeros(len(bragg_idx))
+        for _ in range(n_samples):
+            noise = rng.normal(0, sigma, perfect_pts.shape).astype(np.float32)
+            noisy_pts = perfect_pts.astype(np.float32) + noise
+            sk = sf3d(noisy_pts, k)
+            sk_sum += sk[bragg_idx]
+        sk_mean = sk_sum / n_samples
+
+        np.testing.assert_allclose(
+            sk_mean[testable], expected[testable], rtol=0.10,
+            err_msg=f"σ={sigma}: Bragg peak DWF mismatch",
+        )
+
+    def test_diffuse_background_at_bragg(self):
+        """Intensity lost from Bragg peaks appears as diffuse scattering.
+
+        The diffuse background at Bragg peaks is 1 - exp(-σ²|k|²).
+        As σ increases, more intensity moves from Bragg peaks to background.
+        """
+        _, perfect_pts = freud.data.UnitCell.sc().generate_system(3)
+        k = crystal_kvecs(1.0, K=2)
+        bragg_idx = self._bragg_indices(k, K_max=2)
+
+        # Perfect crystal S₀ = N at all Bragg peaks
+        # With noise: <S> = 1 + exp(-σ²k²)(N - 1)
+        # Diffuse fraction = 1 - exp(-σ²k²)
+        # Verify: higher σ → lower Bragg intensity
+        sigma_low, sigma_high = 0.02, 0.15
+        n_samples = 50
+        rng = np.random.default_rng(7)
+
+        def avg_bragg(sigma):
+            sk_sum = np.zeros(len(bragg_idx))
+            for _ in range(n_samples):
+                noise = rng.normal(0, sigma, perfect_pts.shape).astype(np.float32)
+                noisy_pts = perfect_pts.astype(np.float32) + noise
+                sk_sum += sf3d(noisy_pts, k)[bragg_idx]
+            return np.mean(sk_sum) / n_samples
+
+        mean_low = avg_bragg(sigma_low)
+        mean_high = avg_bragg(sigma_high)
+        np.testing.assert_array_less(
+            mean_high, mean_low,
+            err_msg=f"Higher σ should reduce Bragg intensity: σ={sigma_high} mean={mean_high:.2f} >= σ={sigma_low} mean={mean_low:.2f}",
+        )
+
+    def test_perfect_crystal_dwf_is_one(self):
+        """With σ=0 the Debye-Waller factor is exactly 1 (no attenuation)."""
+        _, perfect_pts = freud.data.UnitCell.sc().generate_system(3)
+        k = crystal_kvecs(1.0, K=2)
+        bragg_idx = self._bragg_indices(k, K_max=2)
+        N = len(perfect_pts)
+
+        sk = sf3d(perfect_pts.astype(np.float32), k)
+        np.testing.assert_allclose(
+            sk[bragg_idx], N, rtol=RTOL,
+            err_msg="Perfect crystal Bragg peaks should equal N (DWF=1)",
+        )
+
 
 class TestStatisticalProperties:
     """Diffraction of random systems have some properties"""
@@ -304,7 +396,7 @@ class TestStatisticalProperties:
     def test_random_mean_near_one(self):
         """For N>>1 random points, <S(k)> -> 1 for k != 0."""
         _, points = freud.data.make_random_system(10.0, 5000, seed=42)
-        k_vecs = box_kvecs(10.0, K=5)
+        k_vecs = crystal_kvecs(10.0, K=5)
         sk = sf3d(points.astype(np.float32), k_vecs)
         k_sq = np.sum(k_vecs.astype(np.float64) ** 2, axis=1)
         nonzero = k_sq > 1e-10
@@ -318,7 +410,7 @@ class TestStatisticalProperties:
         vars_ = {}
         for N in [500, 2000]:
             box, points = freud.data.make_random_system(10.0, N, seed=42)
-            k_vecs = box_kvecs(10.0, K=3)
+            k_vecs = crystal_kvecs(10.0, K=3)
             sk = sf3d(points.astype(np.float32), k_vecs)
             k_sq = np.sum(k_vecs.astype(np.float64) ** 2, axis=1)
             nonzero = k_sq > 1e-10
@@ -372,7 +464,6 @@ class TestDebyeValidation:
     def test_debye_matches_direct(self):
         """Compare GPU direct FT against Debye scattering on an FCC crystal."""
         box, points = freud.data.UnitCell.fcc().generate_system(3, sigma_noise=0.05, seed=42)
-        N = len(points)
 
         # Choose q values and generate k-vectors on spherical shells
         q_values = np.array([2.0, 4.0, 6.0, 8.0, 10.0])
@@ -470,7 +561,7 @@ class TestDebyeValidation:
     def test_output_non_negative(self):
         """S(k) is always >= 0 (sum of squared moduli / N)."""
         _, points = freud.data.make_random_system(10.0, 500, seed=1)
-        k_vecs = box_kvecs(10.0, K=5)
+        k_vecs = crystal_kvecs(10.0, K=5)
         sk = sf3d(points.astype(np.float32), k_vecs)
         np.testing.assert_array_less(
             -ATOL, sk,
