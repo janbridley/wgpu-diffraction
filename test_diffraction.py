@@ -24,10 +24,7 @@ def direct_ft_numpy(points, k_vecs):
     phases = k_vecs.astype(np.float64) @ points.astype(np.float64).T
     c = np.cos(phases).sum(axis=1)
     s = np.sin(phases).sum(axis=1)
-    sk = (c**2 + s**2) / N
-    k_sq = np.square(k_vecs.astype(np.float64)).sum(axis=1)
-    sk[k_sq < 1e-10] = 0.0
-    return sk
+    return ((c**2 + s**2) / N).astype(np.float64)
 
 
 def box_kvecs(L, K):
@@ -169,12 +166,12 @@ class TestEdgeCases:
         sk = sf3d(points, k_vecs)
         np.testing.assert_allclose(sk, [1.0, 1.0, 1.0], atol=ATOL)
 
-    def test_k_zero_masked(self):
-        """k=0 must be masked to exactly 0.0."""
+    def test_k_zero_equals_N(self):
+        """k=0: S(0) = N (all particles in phase)."""
         points = np.array([[1, 2, 3], [4, 5, 6]], dtype=np.float32)
         k_vecs = np.array([[0, 0, 0], [1, 0, 0]], dtype=np.float32)
         sk = sf3d(points, k_vecs)
-        assert sk[0] == 0.0
+        np.testing.assert_allclose(sk[0], 2.0, atol=ATOL)
         assert sk[1] != 0.0
 
     def test_destructive_interference(self):
@@ -309,7 +306,8 @@ class TestStatisticalProperties:
         _, points = freud.data.make_random_system(10.0, 5000, seed=42)
         k_vecs = box_kvecs(10.0, K=5)
         sk = sf3d(points.astype(np.float32), k_vecs)
-        nonzero = sk != 0.0
+        k_sq = np.sum(k_vecs.astype(np.float64) ** 2, axis=1)
+        nonzero = k_sq > 1e-10
         mean_sk = np.mean(sk[nonzero])
         np.testing.assert_allclose(
             mean_sk, 1.0, atol=0.05, err_msg=f"Mean S(k) = {mean_sk:.4f}, expected ~1.0"
@@ -322,10 +320,159 @@ class TestStatisticalProperties:
             box, points = freud.data.make_random_system(10.0, N, seed=42)
             k_vecs = box_kvecs(10.0, K=3)
             sk = sf3d(points.astype(np.float32), k_vecs)
-            nonzero = sk != 0.0
+            k_sq = np.sum(k_vecs.astype(np.float64) ** 2, axis=1)
+            nonzero = k_sq > 1e-10
             vars_[N] = np.var(sk[nonzero])
         np.testing.assert_array_less(
             vars_[2000],
             vars_[500],
             err_msg=f"Var(N=2000)={vars_[2000]:.4f} should be < Var(N=500)={vars_[500]:.4f}",
+        )
+
+    def test_large_k_scattering_goes_to_one(self):
+        """At large |k|, scattering becomes incoherent and <S(k)> -> 1."""
+        _, points = freud.data.make_random_system(10.0, 1000, seed=1)
+        # Generate k-vectors with large |k| on a spherical shell
+        rng = np.random.default_rng(1)
+        directions = rng.standard_normal((5000, 3)).astype(np.float32)
+        directions /= np.linalg.norm(directions, axis=1, keepdims=True)
+        k_magnitude = 200.0  # much larger than 2*pi/L
+        k_vecs = directions * k_magnitude
+        sk = sf3d(points, k_vecs)
+        np.testing.assert_allclose(
+            np.mean(sk), 1.0, atol=0.05,
+            err_msg=f"Large-k mean S(k) = {np.mean(sk):.4f}, expected ~1.0",
+        )
+
+
+class TestDebyeValidation:
+    """Validate against the Debye scattering equation (independent algorithm).
+
+    The Debye formula computes the isotropic (spherically-averaged) structure factor
+    from pairwise distances: S(q) = (1/N) Σ_i Σ_j sinc(q |r_ij|), where sinc is
+    the unnormalized sin(x)/x. This is an O(N²) algorithm completely independent
+    of the direct Fourier approach.
+    """
+
+    @staticmethod
+    def _debye_ssf(points, q_values):
+        """Compute S(q) via the Debye scattering equation (float64 reference)."""
+        pts = points.astype(np.float64)
+        N = len(pts)
+        # Pairwise distance matrix
+        diff = pts[:, np.newaxis, :] - pts[np.newaxis, :, :]
+        distances = np.sqrt(np.sum(diff ** 2, axis=2)).ravel()
+        S = np.zeros(len(q_values))
+        for i, q in enumerate(q_values):
+            qd = q * distances
+            # sinc(x/π) = sin(x)/x, but we want sin(qd)/(qd) so use np.sinc(qd/π)
+            S[i] = np.sum(np.sinc(qd / np.pi)) / N
+        return S
+
+    def test_debye_matches_direct(self):
+        """Compare GPU direct FT against Debye scattering on an FCC crystal."""
+        box, points = freud.data.UnitCell.fcc().generate_system(3, sigma_noise=0.05, seed=42)
+        N = len(points)
+
+        # Choose q values and generate k-vectors on spherical shells
+        q_values = np.array([2.0, 4.0, 6.0, 8.0, 10.0])
+        rng = np.random.default_rng(42)
+        n_per_shell = 2000
+        k_vecs = []
+        for q in q_values:
+            dirs = rng.standard_normal((n_per_shell, 3)).astype(np.float32)
+            dirs /= np.linalg.norm(dirs, axis=1, keepdims=True)
+            k_vecs.append(dirs * q)
+        k_vecs = np.vstack(k_vecs).astype(np.float32)
+
+        sk_gpu = sf3d(points.astype(np.float32), k_vecs)
+
+        # Average GPU result per shell and compare to Debye
+        for i, q in enumerate(q_values):
+            shell = sk_gpu[i * n_per_shell : (i + 1) * n_per_shell]
+            sk_shell_mean = np.mean(shell)
+            sk_debye = self._debye_ssf(points, np.array([q]))[0]
+            np.testing.assert_allclose(
+                sk_shell_mean, sk_debye, rtol=0.05,
+                err_msg=f"q={q}: GPU mean={sk_shell_mean:.2f}, Debye={sk_debye:.2f}",
+            )
+
+    @pytest.mark.parametrize(
+        "name,uc_func",
+        [
+            ("SC", freud.data.UnitCell.sc),
+            ("BCC", freud.data.UnitCell.bcc),
+            ("FCC", freud.data.UnitCell.fcc),
+        ],
+    )
+    def test_debye_crystal_types(self, name, uc_func):
+        """Debye validation on multiple crystal types with noise."""
+        box, points = uc_func().generate_system(2, sigma_noise=0.1, seed=7)
+
+        q_values = np.array([3.0, 7.0, 12.0])
+        rng = np.random.default_rng(7)
+        n_per_shell = 2000
+        k_vecs = []
+        for q in q_values:
+            dirs = rng.standard_normal((n_per_shell, 3)).astype(np.float32)
+            dirs /= np.linalg.norm(dirs, axis=1, keepdims=True)
+            k_vecs.append(dirs * q)
+        k_vecs = np.vstack(k_vecs).astype(np.float32)
+
+        sk_gpu = sf3d(points.astype(np.float32), k_vecs)
+
+        for i, q in enumerate(q_values):
+            shell = sk_gpu[i * n_per_shell : (i + 1) * n_per_shell]
+            sk_debye = self._debye_ssf(points, np.array([q]))[0]
+            np.testing.assert_allclose(
+                np.mean(shell), sk_debye, rtol=0.05,
+                err_msg=f"{name} q={q}: GPU mean={np.mean(shell):.2f}, Debye={sk_debye:.2f}",
+            )
+
+    def test_debye_random_system(self):
+        """Debye validation on a random (isotropic) system."""
+        _, points = freud.data.make_random_system(10.0, 200, seed=99)
+
+        q_values = np.array([1.0, 3.0, 5.0, 8.0])
+        rng = np.random.default_rng(99)
+        n_per_shell = 4000
+        k_vecs = []
+        for q in q_values:
+            dirs = rng.standard_normal((n_per_shell, 3)).astype(np.float32)
+            dirs /= np.linalg.norm(dirs, axis=1, keepdims=True)
+            k_vecs.append(dirs * q)
+        k_vecs = np.vstack(k_vecs).astype(np.float32)
+
+        sk_gpu = sf3d(points.astype(np.float32), k_vecs)
+        sk_debye = self._debye_ssf(points, q_values)
+
+        for i, q in enumerate(q_values):
+            shell = sk_gpu[i * n_per_shell : (i + 1) * n_per_shell]
+            np.testing.assert_allclose(
+                np.mean(shell), sk_debye[i], rtol=0.05,
+                err_msg=f"Random q={q}: GPU mean={np.mean(shell):.2f}, Debye={sk_debye[i]:.2f}",
+            )
+
+    def test_s0_equals_N(self):
+        """S(0) = N for any configuration (fundamental normalization).
+
+        At k=0, all phases are 0, so S(0) = (1/N)|sum(1)|^2 = N.
+        """
+        _, points = freud.data.make_random_system(10.0, 500, seed=1)
+        N = len(points)
+        k_vecs = np.array([[0, 0, 0]], dtype=np.float32)
+        sk = sf3d(points.astype(np.float32), k_vecs)
+        np.testing.assert_allclose(
+            sk[0], N, rtol=1e-3,
+            err_msg=f"S(0) = {sk[0]:.2f}, expected N={N}",
+        )
+
+    def test_output_non_negative(self):
+        """S(k) is always >= 0 (sum of squared moduli / N)."""
+        _, points = freud.data.make_random_system(10.0, 500, seed=1)
+        k_vecs = box_kvecs(10.0, K=5)
+        sk = sf3d(points.astype(np.float32), k_vecs)
+        np.testing.assert_array_less(
+            -ATOL, sk,
+            err_msg="S(k) must be non-negative",
         )
