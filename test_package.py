@@ -1,5 +1,5 @@
 import numpy as np
-import sf3d_gpu
+import glsf
 import time
 
 def test():
@@ -17,17 +17,17 @@ def test():
     NX, NY, NZ = np.meshgrid(nx, ny, nz, indexing='ij')
     k_vecs = np.stack([NX.flatten(), NY.flatten(), NZ.flatten()], axis=1).astype(np.float32) * k_factor
     
-    print(f"Testing sf3d_gpu package (N={N}, Nk={len(k_vecs)})...")
+    print(f"Testing glsf package (N={N}, Nk={len(k_vecs)})...")
     
     # First call (GPU init)
     start = time.perf_counter()
-    sk = sf3d_gpu.sf3d(points, k_vecs)
+    sk = glsf.sf3d(points, k_vecs)
     end = time.perf_counter()
     print(f"First call: {(end - start)*1000:.3f} ms")
-    
+
     # Second call (Warm context)
     start = time.perf_counter()
-    sk = sf3d_gpu.sf3d(points, k_vecs)
+    sk = glsf.sf3d(points, k_vecs)
     end = time.perf_counter()
     print(f"Second call: {(end - start)*1000:.3f} ms")
     

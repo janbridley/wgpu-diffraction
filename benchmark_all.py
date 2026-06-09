@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 import mlx.core as mx
-import sf3d_gpu
+import glsf
 import time
 
 CHUNK_SIZE = 4096
@@ -68,10 +68,10 @@ def benchmark_mlx_gpu(points, k_vecs):
 def benchmark_sf3d_gpu(points, k_vecs):
     # Our custom OpenCL package
     # Warmup (handled by static RAII engine in C++)
-    _ = sf3d_gpu.sf3d(points, k_vecs)
-    
+    _ = glsf.sf3d(points, k_vecs)
+
     start = time.perf_counter()
-    sk = sf3d_gpu.sf3d(points, k_vecs)
+    sk = glsf.sf3d(points, k_vecs)
     return (time.perf_counter() - start) * 1000
 
 def run_suite(N, K):

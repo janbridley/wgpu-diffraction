@@ -28,6 +28,6 @@ sf3d(nb::ndarray<float, nb::shape<-1, 3>> points,
     );
 }
 
-NB_MODULE(sf3d_gpu, m) {
+NB_MODULE(glsf, m) {
     m.def("sf3d", &sf3d, "Compute 3D Structure Factor using OpenCL");
 }

@@ -3,7 +3,7 @@ requires = ["scikit-build-core", "nanobind"]
 build-backend = "scikit_build_core.build"
 
 [project]
-name = "sf3d_gpu"
+name = "glsf"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = ["numpy"]
