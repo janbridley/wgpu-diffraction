@@ -37,6 +37,15 @@ def crystal_kvecs(L, K):
     )
 
 
+def bragg_indices(k):
+    """Return indices of k-vectors on reciprocal lattice points (excluding origin)."""
+    f = 2 * np.pi
+    hkl = np.round(k / f).astype(int)
+    on_bragg = np.all(np.abs(k - hkl * f) < 1e-6, axis=1)
+    nonzero = np.any(hkl != 0, axis=1)
+    return np.where(on_bragg & nonzero)[0]
+
+
 class TestNumericalAccuracy:
     @pytest.mark.parametrize(
         "name,uc_func",
@@ -87,17 +96,10 @@ class TestCrystalSelectionRules:
         sk = sf3d(points.astype(np.float32), k)
         N = len(points)
         f = 2 * np.pi
-        allowed, forbidden = [], []
-        for i, kv in enumerate(k):
-            hkl = tuple(np.round(kv / f).astype(int))
-            if hkl == (0, 0, 0):
-                continue
-            if np.allclose(kv, np.array(hkl) * f, atol=1e-6):
-                if is_allowed(hkl):
-                    allowed.append(sk[i])
-                else:
-                    forbidden.append(sk[i])
-        return N, np.array(allowed), np.array(forbidden)
+        idx = bragg_indices(k)
+        hkl = np.round(k[idx] / f).astype(int)
+        allowed_mask = np.array([is_allowed(tuple(h)) for h in hkl])
+        return N, sk[idx][allowed_mask], sk[idx][~allowed_mask]
 
     @pytest.mark.parametrize(
         "name,uc_func,is_allowed",
@@ -167,13 +169,7 @@ class TestEdgeCases:
         N = len(points)
         k = crystal_kvecs(1.0, K=2)
         sk = sf3d(points.astype(np.float32), k)
-        f = 2 * np.pi
-        bragg = [
-            sk[i]
-            for i, kv in enumerate(k)
-            if not np.all(np.round(kv / f).astype(int) == 0)
-            and np.allclose(kv, np.round(kv / f).astype(int) * f, atol=1e-6)
-        ]
+        bragg = sk[bragg_indices(k)]
         np.testing.assert_allclose(
             bragg,
             N,
@@ -216,15 +212,13 @@ class TestDiamondStructureFactor:
         sk = sf3d(points.astype(np.float32), k)
 
         f = 2 * np.pi
-        hkl = np.round(k / f).astype(int)
-        on_bragg = np.all(np.abs(k - hkl * f) < 1e-6, axis=1)
-        nonzero = np.any(hkl != 0, axis=1)
-        mask = on_bragg & nonzero
+        idx = bragg_indices(k)
+        hkl = np.round(k[idx] / f).astype(int)
 
-        h, k_, l = hkl[mask, 0], hkl[mask, 1], hkl[mask, 2]
-        s = sk[mask]
-        parity_uniform = (h % 2 == k_ % 2) & (k_ % 2 == l % 2)
-        hkl_sum = h + k_ + l
+        hh, kk, ll = hkl[:, 0], hkl[:, 1], hkl[:, 2]
+        s = sk[idx]
+        parity_uniform = (hh % 2 == kk % 2) & (kk % 2 == ll % 2)
+        hkl_sum = hh + kk + ll
 
         return (
             N,
@@ -282,21 +276,12 @@ class TestDebyeWaller:
     where S₀(k) is the perfect-crystal structure factor.
     """
 
-    @staticmethod
-    def _bragg_indices(k, K_max):
-        """Return indices of k-vectors that lie on the reciprocal lattice."""
-        f = 2 * np.pi
-        hkl = np.round(k / f).astype(int)
-        on_bragg = np.all(np.abs(k - hkl * f) < 1e-6, axis=1)
-        nonzero = np.any(hkl != 0, axis=1)
-        return np.where(on_bragg & nonzero)[0]
-
     @pytest.mark.parametrize("sigma", [0.01, 0.05, 0.1, 0.2])
     def test_bragg_peak_attenuation(self, sigma):
         """Bragg peak intensity is damped by exp(-σ²|k|²) (Debye-Waller factor)."""
         _, perfect_pts = freud.data.UnitCell.sc().generate_system(3)
         k = crystal_kvecs(1.0, K=3)
-        bragg_idx = self._bragg_indices(k, K_max=3)
+        bragg_idx = bragg_indices(k)
 
         # Compute perfect-crystal S₀(k) at Bragg peaks
         s0 = sf3d(perfect_pts.astype(np.float32), k)
@@ -339,7 +324,7 @@ class TestDebyeWaller:
         """
         _, perfect_pts = freud.data.UnitCell.sc().generate_system(3)
         k = crystal_kvecs(1.0, K=2)
-        bragg_idx = self._bragg_indices(k, K_max=2)
+        bragg_idx = bragg_indices(k)
 
         # Perfect crystal S₀ = N at all Bragg peaks
         # With noise: <S> = 1 + exp(-σ²k²)(N - 1)
@@ -369,7 +354,7 @@ class TestDebyeWaller:
         """With σ=0 the Debye-Waller factor is exactly 1 (no attenuation)."""
         _, perfect_pts = freud.data.UnitCell.sc().generate_system(3)
         k = crystal_kvecs(1.0, K=2)
-        bragg_idx = self._bragg_indices(k, K_max=2)
+        bragg_idx = bragg_indices(k)
         N = len(perfect_pts)
 
         sk = sf3d(perfect_pts.astype(np.float32), k)
@@ -450,7 +435,7 @@ class TestDebyeValidation:
         S = np.zeros(len(q_values))
         for i, q in enumerate(q_values):
             qd = q * distances
-            # sinc(x/π) = sin(x)/x, but we want sin(qd)/(qd) so use np.sinc(qd/π)
+            # np.sinc(x) = sin(πx)/(πx), so np.sinc(qd/π) = sin(qd)/qd
             S[i] = np.sum(np.sinc(qd / np.pi)) / N
         return S
 
@@ -591,20 +576,12 @@ class TestVacancyDisorder:
         mask[indices] = False
         return points[mask]
 
-    @staticmethod
-    def _bragg_indices(k):
-        f = 2 * np.pi
-        hkl = np.round(k / f).astype(int)
-        on_bragg = np.all(np.abs(k - hkl * f) < 1e-6, axis=1)
-        nonzero = np.any(hkl != 0, axis=1)
-        return np.where(on_bragg & nonzero)[0]
-
     @pytest.mark.parametrize("c", [0.05, 0.15])
     def test_bragg_peak_reduction(self, c):
         """Bragg peaks follow <S(k)> = c + (1-c) S_full(k)."""
         _, perfect_pts = freud.data.UnitCell.sc().generate_system(4)
         k = crystal_kvecs(1.0, K=3)
-        bragg_idx = self._bragg_indices(k)
+        bragg_idx = bragg_indices(k)
 
         s_full = sf3d(perfect_pts.astype(np.float32), k)
         expected = c + (1 - c) * s_full[bragg_idx].astype(np.float64)
@@ -657,7 +634,7 @@ class TestVacancyDisorder:
         """Higher vacancy fraction → lower Bragg intensity."""
         _, perfect_pts = freud.data.UnitCell.sc().generate_system(4)
         k = crystal_kvecs(1.0, K=2)
-        bragg_idx = self._bragg_indices(k)
+        bragg_idx = bragg_indices(k)
 
         n_samples = 50
         rng = np.random.default_rng(7)
@@ -769,14 +746,6 @@ class TestUniformStrain:
         scale = (1 + np.asarray(strain_diag, dtype=np.float64)).astype(np.float32)
         return points * scale
 
-    @staticmethod
-    def _bragg_indices(k):
-        f = 2 * np.pi
-        hkl = np.round(k / f).astype(int)
-        on_bragg = np.all(np.abs(k - hkl * f) < 1e-6, axis=1)
-        nonzero = np.any(hkl != 0, axis=1)
-        return np.where(on_bragg & nonzero)[0]
-
     @pytest.mark.parametrize("eps", [0.03, 0.05, 0.08])
     def test_hydrostatic_strain_shifts_peaks(self, eps):
         """Hydrostatic strain: peaks shift from a=1 to a=1+eps."""
@@ -791,7 +760,7 @@ class TestUniformStrain:
         sk_at_new = sf3d(strained.astype(np.float32), k_new)
 
         nonzero_new = np.any(k_new != 0, axis=1)
-        bragg_old = self._bragg_indices(k_old)
+        bragg_old = bragg_indices(k_old)
 
         np.testing.assert_allclose(
             sk_at_new[nonzero_new],
@@ -822,7 +791,7 @@ class TestUniformStrain:
         sk_old = sf3d(strained.astype(np.float32), k_old)
 
         nonzero_new = np.any(k_new != 0, axis=1)
-        bragg_old = self._bragg_indices(k_old)
+        bragg_old = bragg_indices(k_old)
 
         np.testing.assert_allclose(
             sk_new[nonzero_new],
