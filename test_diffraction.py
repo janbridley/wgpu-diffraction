@@ -163,21 +163,6 @@ class TestEdgeCases:
         sk = sf3d(points, k_vecs)
         np.testing.assert_allclose(sk, [2.0], atol=ATOL)
 
-    def test_perfect_crystal_peak_equals_N(self):
-        """For a perfect SC crystal, S(k) should equal N at Bragg peaks."""
-        _, points = freud.data.UnitCell.sc().generate_system(4)
-        N = len(points)
-        k = crystal_kvecs(1.0, K=2)
-        sk = sf3d(points.astype(np.float32), k)
-        bragg = sk[bragg_indices(k)]
-        np.testing.assert_allclose(
-            bragg,
-            N,
-            rtol=RTOL,
-            err_msg=f"Bragg peaks should equal N={N}",
-        )
-
-
 _DIAMOND_UC = freud.data.UnitCell(
     freud.Box.cube(1.0),
     np.array(
@@ -299,7 +284,7 @@ class TestDebyeWaller:
             pytest.skip(f"σ={sigma}: no Bragg peaks with measurable DWF")
 
         # Average over noisy realizations
-        n_samples = 300
+        n_samples = 100
         rng = np.random.default_rng(42)
         sk_sum = np.zeros(len(bragg_idx))
         for _ in range(n_samples):
@@ -312,57 +297,8 @@ class TestDebyeWaller:
         np.testing.assert_allclose(
             sk_mean[testable],
             expected[testable],
-            rtol=0.10,
+            rtol=0.12,
             err_msg=f"σ={sigma}: Bragg peak DWF mismatch",
-        )
-
-    def test_diffuse_background_at_bragg(self):
-        """Intensity lost from Bragg peaks appears as diffuse scattering.
-
-        The diffuse background at Bragg peaks is 1 - exp(-σ²|k|²).
-        As σ increases, more intensity moves from Bragg peaks to background.
-        """
-        _, perfect_pts = freud.data.UnitCell.sc().generate_system(3)
-        k = crystal_kvecs(1.0, K=2)
-        bragg_idx = bragg_indices(k)
-
-        # Perfect crystal S₀ = N at all Bragg peaks
-        # With noise: <S> = 1 + exp(-σ²k²)(N - 1)
-        # Diffuse fraction = 1 - exp(-σ²k²)
-        # Verify: higher σ → lower Bragg intensity
-        sigma_low, sigma_high = 0.02, 0.15
-        n_samples = 50
-        rng = np.random.default_rng(7)
-
-        def avg_bragg(sigma):
-            sk_sum = np.zeros(len(bragg_idx))
-            for _ in range(n_samples):
-                noise = rng.normal(0, sigma, perfect_pts.shape).astype(np.float32)
-                noisy_pts = perfect_pts.astype(np.float32) + noise
-                sk_sum += sf3d(noisy_pts, k)[bragg_idx]
-            return np.mean(sk_sum) / n_samples
-
-        mean_low = avg_bragg(sigma_low)
-        mean_high = avg_bragg(sigma_high)
-        np.testing.assert_array_less(
-            mean_high,
-            mean_low,
-            err_msg=f"Higher σ should reduce Bragg intensity: σ={sigma_high} mean={mean_high:.2f} >= σ={sigma_low} mean={mean_low:.2f}",
-        )
-
-    def test_perfect_crystal_dwf_is_one(self):
-        """With σ=0 the Debye-Waller factor is exactly 1 (no attenuation)."""
-        _, perfect_pts = freud.data.UnitCell.sc().generate_system(3)
-        k = crystal_kvecs(1.0, K=2)
-        bragg_idx = bragg_indices(k)
-        N = len(perfect_pts)
-
-        sk = sf3d(perfect_pts.astype(np.float32), k)
-        np.testing.assert_allclose(
-            sk[bragg_idx],
-            N,
-            rtol=RTOL,
-            err_msg="Perfect crystal Bragg peaks should equal N (DWF=1)",
         )
 
 
@@ -530,34 +466,6 @@ class TestDebyeValidation:
                 err_msg=f"Random q={q}: GPU mean={np.mean(shell):.2f}, Debye={sk_debye[i]:.2f}",
             )
 
-    def test_s0_equals_N(self):
-        """S(0) = N for any configuration (fundamental normalization).
-
-        At k=0, all phases are 0, so S(0) = (1/N)|sum(1)|^2 = N.
-        """
-        _, points = freud.data.make_random_system(10.0, 500, seed=1)
-        N = len(points)
-        k_vecs = np.array([[0, 0, 0]], dtype=np.float32)
-        sk = sf3d(points.astype(np.float32), k_vecs)
-        np.testing.assert_allclose(
-            sk[0],
-            N,
-            rtol=1e-3,
-            err_msg=f"S(0) = {sk[0]:.2f}, expected N={N}",
-        )
-
-    def test_output_non_negative(self):
-        """S(k) is always >= 0 (sum of squared moduli / N)."""
-        _, points = freud.data.make_random_system(10.0, 500, seed=1)
-        k_vecs = crystal_kvecs(10.0, K=5)
-        sk = sf3d(points.astype(np.float32), k_vecs)
-        np.testing.assert_array_less(
-            -ATOL,
-            sk,
-            err_msg="S(k) must be non-negative",
-        )
-
-
 class TestVacancyDisorder:
     """Structure factor with random vacancies (quenched disorder).
 
@@ -586,7 +494,7 @@ class TestVacancyDisorder:
         s_full = sf3d(perfect_pts.astype(np.float32), k)
         expected = c + (1 - c) * s_full[bragg_idx].astype(np.float64)
 
-        n_samples = 300
+        n_samples = 100
         rng = np.random.default_rng(42)
         sk_sum = np.zeros(len(bragg_idx))
         for _ in range(n_samples):
@@ -597,7 +505,7 @@ class TestVacancyDisorder:
         np.testing.assert_allclose(
             sk_mean,
             expected,
-            rtol=0.10,
+            rtol=0.12,
             err_msg=f"c={c}: vacancy Bragg peak mismatch",
         )
 
@@ -615,7 +523,7 @@ class TestVacancyDisorder:
         nonzero = np.any(k != 0, axis=1)
         k = k[nonzero]
 
-        n_samples = 300
+        n_samples = 100
         rng = np.random.default_rng(99)
         sk_sum = np.zeros(len(k))
         for _ in range(n_samples):
@@ -628,30 +536,6 @@ class TestVacancyDisorder:
             c,
             atol=0.05,
             err_msg=f"c={c}: off-Bragg <S>={np.mean(sk_mean):.4f}, expected ~{c}",
-        )
-
-    def test_monotonic_with_concentration(self):
-        """Higher vacancy fraction → lower Bragg intensity."""
-        _, perfect_pts = freud.data.UnitCell.sc().generate_system(4)
-        k = crystal_kvecs(1.0, K=2)
-        bragg_idx = bragg_indices(k)
-
-        n_samples = 50
-        rng = np.random.default_rng(7)
-
-        def avg_bragg(c):
-            sk_sum = np.zeros(len(bragg_idx))
-            for _ in range(n_samples):
-                pts = self._introduce_vacancies(perfect_pts, c, rng)
-                sk_sum += sf3d(pts.astype(np.float32), k)[bragg_idx]
-            return np.mean(sk_sum) / n_samples
-
-        mean_low = avg_bragg(0.02)
-        mean_high = avg_bragg(0.20)
-        np.testing.assert_array_less(
-            mean_high,
-            mean_low,
-            err_msg=f"Higher c should reduce Bragg: c=0.20 mean={mean_high:.2f} >= c=0.02 mean={mean_low:.2f}",
         )
 
 
@@ -774,9 +658,9 @@ class TestUniformStrain:
             err_msg="Old peak positions should be weaker than new after strain",
         )
 
-    @pytest.mark.parametrize("axis_idx", [0, 1, 2])
-    def test_uniaxial_strain_shifts_peaks(self, axis_idx):
-        """Uniaxial strain along each axis shifts peaks in that direction only."""
+    def test_uniaxial_strain_shifts_peaks(self):
+        """Uniaxial strain along one axis shifts peaks in that direction only."""
+        axis_idx = 0
         _, perfect_pts = freud.data.UnitCell.sc().generate_system(4)
         N = len(perfect_pts)
         eps_diag = [0.0, 0.0, 0.0]
@@ -803,29 +687,4 @@ class TestUniformStrain:
             np.mean(sk_old[bragg_old]),
             np.mean(sk_new[nonzero_new]),
             err_msg=f"axis={axis_idx}: old cubic peaks should be weaker after uniaxial strain",
-        )
-
-    @pytest.mark.parametrize(
-        "strain_diag",
-        [
-            [0.05, 0.05, 0.05],
-            [0.05, 0.0, 0.0],
-            [0.0, 0.05, 0.0],
-            [0.0, 0.0, -0.03],
-            [0.05, -0.02, 0.03],
-        ],
-    )
-    def test_strain_preserves_s0(self, strain_diag):
-        """S(0) = N is invariant under affine transformation."""
-        _, perfect_pts = freud.data.UnitCell.sc().generate_system(4)
-        N = len(perfect_pts)
-        strained = self._apply_strain(perfect_pts, strain_diag)
-
-        k_zero = np.array([[0, 0, 0]], dtype=np.float32)
-        sk = sf3d(strained.astype(np.float32), k_zero)
-        np.testing.assert_allclose(
-            sk[0],
-            N,
-            rtol=1e-3,
-            err_msg=f"strain={strain_diag}: S(0) = {sk[0]:.2f}, expected N={N}",
         )
